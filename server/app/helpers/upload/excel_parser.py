@@ -1,14 +1,15 @@
-"""Excel parser — reads .xlsb and .xlsx into a list of row dicts."""
-
-from fastapi import HTTPException
 import email
 import io
+import logging
 import warnings
 from email import policy
 from pathlib import Path
 
+from fastapi import HTTPException
 import pandas as pd
 import pyxlsb
+
+logger = logging.getLogger(__name__)
 
 # The main sheet name from the source file
 EXPECTED_SHEET = "NDC Process Request Status(NDC )"
@@ -33,9 +34,8 @@ def read_excel(file_path: str | Path) -> list[dict]:
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in read_excel: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in read_excel: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
 def _read_xlsb(file_path: Path) -> list[dict]:
@@ -64,9 +64,8 @@ def _read_xlsb(file_path: Path) -> list[dict]:
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in _read_xlsb: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in _read_xlsb: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
 def _read_xlsx(file_path: Path) -> list[dict]:
@@ -160,6 +159,5 @@ def _read_oracle_mhtml_xls(file_path: Path) -> list[dict]:
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in _read_oracle_mhtml_xls: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in _read_oracle_mhtml_xls: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')

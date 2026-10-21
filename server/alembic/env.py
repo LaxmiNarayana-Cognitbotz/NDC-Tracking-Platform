@@ -52,11 +52,16 @@ async def run_async_migrations() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
+
     await connectable.dispose()
 
-if context.is_offline_mode():
-    print("Offline migrations are not supported in this simplified config.")
-else:
+def run_migrations_online() -> None:
     asyncio.run(run_async_migrations())
+
+if context.is_offline_mode():
+    raise NotImplementedError("Offline migrations not supported.")
+else:
+    run_migrations_online()

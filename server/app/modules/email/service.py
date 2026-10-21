@@ -1,37 +1,47 @@
 """Email service – sends the NDC Delayed Cases reminder email via SMTP."""
 
-from fastapi import HTTPException
 import asyncio
 import io
 import logging
-import os
 import smtplib
+import time
 import zipfile
 from datetime import date, datetime, timedelta
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from app.helpers.ff.sharepoint_service import SharePointService, get_httpx_client
 from app.models.email_recipient import EmailRecipient
+from app.models.employee_email_master import EmployeeEmailMaster
 from app.models.ndc_approval import NdcApproval
 from app.models.ndc_record import NdcRecord
 from app.models.rm_email_configuration import RmEmailConfiguration
-from app.modules.common.service import CommonService
+from app.helpers.upload.status_mapper import derive_fnf_status
 from app.helpers.email.template_renderer import render_template
+from app.helpers.config.system_config_service import SystemConfigService
+from app.helpers.logging.audit_log_service import AuditLogService
 from app.utils.pdf_utils import trim_pdf_to_max_pages
 from config.database import BASE_DIR, async_session
 
 logger = logging.getLogger(__name__)
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
-
+def _send_smtp_sync(smtp_host: str, smtp_port: int, smtp_user: str, smtp_password: str, smtp_from: str, envelope_recipients: list, msg_str: str) -> None:
+    """Synchronously send an email via SMTP in a dedicated worker thread."""
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+        server.ehlo()
+        if "starttls" in server.esmtp_features:
+            server.starttls()
+            server.ehlo()
+        if smtp_user and smtp_password:
+            server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_from, envelope_recipients, msg_str)
 
 class EmailService:
     @staticmethod
@@ -73,9 +83,8 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in _fmt_date: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in _fmt_date: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -96,9 +105,8 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in _days_delayed: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in _days_delayed: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     # ── HTML template builder ─────────────────────────────────────────────────────
@@ -172,17 +180,14 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in _build_html: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in _build_html: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     # ── main send function ────────────────────────────────────────────────────────
 
     @staticmethod
-    async def send_delayed_reminder(
-        records: list[dict], recipient: str | None = None, reminder_type: str = "ndc_delayed"
-    ) -> dict:
+    async def send_delayed_reminder(records: list[dict], recipient: str | None = None, reminder_type: str = "ndc_delayed") -> dict:
         """
         Send the NDC delayed-cases reminder email with all delayed records.
 
@@ -197,19 +202,17 @@ class EmailService:
         """
         try:
             # Check if email notifications are enabled
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications are disabled (EMAIL_NOTIFICATION=%s). Skipping delayed reminder email.", os.getenv("EMAIL_NOTIFICATION"))
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Email notifications are disabled application-wide. Skipping delayed reminder email.")
                 return {"success": True, "message": "Email notifications are disabled. Email not sent."}
 
-            smtp_host = os.getenv("SMTP_HOST") or os.getenv("SMTP_SERVER", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
-            smtp_user = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")
-            smtp_password = os.getenv("SMTP_PASSWORD", "")
-            smtp_from = os.getenv("SMTP_FROM", smtp_user)
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587"))
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user)
 
             recipients_list = EmailService._parse_recipients(recipient)
-            if not recipients_list:
-                recipients_list = EmailService._parse_recipients(os.getenv("EMAIL_RECIPIENT", ""))
 
             if not smtp_from:
                 msg = "SMTP_FROM not configured"
@@ -250,18 +253,12 @@ class EmailService:
             # CC recipient for F&F / GCC HR reminder types
             envelope_recipients = list(recipients_list)
             if reminder_type in ("fnf_open", "fnf_revision", "fnf_delayed", "fnf_paid", "gcc_pending"):
-                cc_recipient = os.getenv("FNF_EMAIL_CC") or os.getenv("EMAIL_CC", "")
-                cc_list = []
-                if cc_recipient:
-                    cc_list = EmailService._parse_recipients(cc_recipient)
-
-                # Add extra CC specifically for F&F Open List Records (manual reminder)
-                if reminder_type == "fnf_open":
-                    extra_cc = os.getenv("FNF_OPEN_EMAIL_CC", "")
-                    if extra_cc:
-                        for extra in EmailService._parse_recipients(extra_cc):
-                            if extra.lower() not in [c.lower() for c in cc_list]:
-                                cc_list.append(extra)
+                dept_name = "GCC HR" if reminder_type == "gcc_pending" else "F&F TEAM"
+                cc_list = SystemConfigService.get_department_cc(dept_name)
+                if not cc_list:
+                    general_cc = SystemConfigService.get("EMAIL_CC", "")
+                    if general_cc:
+                        cc_list = EmailService._parse_recipients(general_cc)
 
                 if cc_list:
                     msg["Cc"] = ", ".join(cc_list)
@@ -271,30 +268,59 @@ class EmailService:
 
             msg.attach(MIMEText(html_body, "html"))
 
+            t0 = time.perf_counter()
             try:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as server:
-                    server.ehlo()
-                    if "starttls" in server.esmtp_features:
-                        server.starttls()
-                        server.ehlo()
-                    if smtp_password:
-                        server.login(smtp_user, smtp_password)
-                    server.sendmail(smtp_from, envelope_recipients, msg.as_string())
+                await asyncio.to_thread(
+                    _send_smtp_sync,
+                    smtp_host,
+                    smtp_port,
+                    smtp_user,
+                    smtp_password,
+                    smtp_from,
+                    envelope_recipients,
+                    msg.as_string()
+                )
 
+                duration_sec = round(time.perf_counter() - t0, 2)
                 logger.info("%s sent to %s (CC: %s, %d records)", subj_title, ", ".join(recipients_list), msg.get("Cc", "None"), len(records))
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type=f"REMINDER_{reminder_type.upper()}",
+                        status="SUCCESS",
+                        target_recipient=", ".join(recipients_list),
+                        cc_recipients=msg.get("Cc", ""),
+                        details=f"{subj_title} sent to {', '.join(recipients_list)} with {len(records)} records.",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return {
                     "success": True,
                     "message": f"Reminder email sent to {', '.join(recipients_list)} with {len(records)} records.",
                 }
             except Exception as e:
+                duration_sec = round(time.perf_counter() - t0, 2)
                 logger.exception("Failed to send reminder email: %s", e)
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type=f"REMINDER_{reminder_type.upper()}",
+                        status="FAILED",
+                        target_recipient=", ".join(recipients_list),
+                        cc_recipients=msg.get("Cc", ""),
+                        error_message=str(e),
+                        details=f"Failed to send reminder email: {e}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return {"success": False, "message": f"Email failed: {e}"}
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_delayed_reminder: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_delayed_reminder: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -306,15 +332,15 @@ class EmailService:
 
         try:
             # Check if email notifications are enabled
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications are disabled (EMAIL_NOTIFICATION=%s). Skipping F&F details email to %s.", os.getenv("EMAIL_NOTIFICATION"), email_to)
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Email notifications are disabled application-wide. Skipping F&F details email to %s.", email_to)
                 return {"success": True, "message": "Email notifications are disabled. Email not sent."}
 
-            smtp_host = os.getenv("SMTP_HOST") or os.getenv("SMTP_SERVER", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
-            smtp_user = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")
-            smtp_password = os.getenv("SMTP_PASSWORD", "")
-            smtp_from = os.getenv("SMTP_FROM", smtp_user)
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587"))
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user)
 
             if not smtp_from:
                 msg = "SMTP_FROM not configured"
@@ -335,13 +361,16 @@ class EmailService:
 
             # Build MIMEMultipart message
             msg = MIMEMultipart("mixed")
-            msg["Subject"] = f"F&F Settlement Details – {record.get('employee_name')} ({record.get('person_number')})"
+            msg["Subject"] = f"F&F Settlement Details - {record.get('employee_name')} ({record.get('person_number')})"
             msg["From"] = smtp_from
             msg["To"] = email_to
         
             # CC recipient for F&F emails (manual and automated)
-            cc_recipient = os.getenv("FNF_EMAIL_CC") or os.getenv("EMAIL_CC", "")
-            cc_list = EmailService._parse_recipients(cc_recipient) if cc_recipient else []
+            cc_list = SystemConfigService.get_department_cc("F&F TEAM")
+            if not cc_list:
+                general_cc = SystemConfigService.get("EMAIL_CC", "")
+                if general_cc:
+                    cc_list = EmailService._parse_recipients(general_cc)
             if cc_list:
                 msg["Cc"] = ", ".join(cc_list)
 
@@ -439,34 +468,70 @@ class EmailService:
             body_part = MIMEText(html_body, "html")
             msg.attach(body_part)
 
+            t0 = time.perf_counter()
             try:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as server:
-                    server.ehlo()
-                    if "starttls" in server.esmtp_features:
-                        server.starttls()
+                def _send_fnf_smtp():
+                    with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as server:
                         server.ehlo()
-                    if smtp_password:
-                        server.login(smtp_user, smtp_password)
-                    server.sendmail(smtp_from, recipients, msg.as_string())
+                        if "starttls" in server.esmtp_features:
+                            server.starttls()
+                            server.ehlo()
+                        if smtp_password:
+                            server.login(smtp_user, smtp_password)
+                        server.sendmail(smtp_from, recipients, msg.as_string())
 
-                logger.info("F&F details email sent to %s (CC: %s) for %s", email_to, cc_recipient, record.get('employee_name'))
+                await asyncio.to_thread(_send_fnf_smtp)
+                duration_sec = round(time.perf_counter() - t0, 2)
+                cc_recipient_str = ", ".join(cc_list) if cc_list else ""
+                logger.info("F&F details email sent to %s (CC: %s) for %s", email_to, cc_recipient_str, record.get('employee_name'))
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type="FNF_DETAILS_EMAIL",
+                        status="SUCCESS",
+                        target_recipient=email_to,
+                        cc_recipients=cc_recipient_str,
+                        details=f"F&F details email sent to {email_to} for {record.get('employee_name')} (Person #{record.get('person_number')})",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return {
                     "success": True,
                     "message": f"Email sent successfully to {email_to}.",
                 }
             except Exception as e:
+                duration_sec = round(time.perf_counter() - t0, 2)
                 logger.exception("Failed to send F&F details email: %s", e)
+                cc_recipient_str = ", ".join(cc_list) if cc_list else ""
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type="FNF_DETAILS_EMAIL",
+                        status="FAILED",
+                        target_recipient=email_to,
+                        cc_recipients=cc_recipient_str,
+                        error_message=str(e),
+                        details=f"Failed to send F&F details email to {email_to}: {e}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return {"success": False, "message": f"Failed to send email: {e}"}
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_fnf_details_email: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_fnf_details_email: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
-    async def send_fnf_email_service(record_id: int, email_to: str, db: AsyncSession, background_tasks: BackgroundTasks = None) -> dict:
+    async def send_fnf_email_service(
+        record_id: int,
+        email_to: str,
+        db: AsyncSession,
+        background_tasks: BackgroundTasks = None
+    ) -> dict:
         """Prepare and send the F&F details email for a specific record."""
         try:
             result = await db.execute(
@@ -519,7 +584,7 @@ class EmailService:
                 "department": record.department or record.department_reporting_name or "—",
                 "resignation_date": record.resignation_date,
                 "last_working_date": record.last_working_date,
-                "fnf_status": CommonService._derive_fnf_status(record),
+                "fnf_status": derive_fnf_status(record),
                 "fnf_completed_date": record.fnf_completed_date,
                 "fnf_document_count": record.fnf_document_count,
                 "fnf_document": fnf_doc_name,
@@ -573,30 +638,28 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_fnf_email_service: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_fnf_email_service: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
     def send_fnf_revision_comment_email(record, comment: str, recipient) -> bool:
         """Send an instant email to F&F Team when a record is marked Revision Required with a comment."""
         try:
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications disabled. Skipping instant F&F revision comment email.")
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Master email toggle is OFF. Skipping instant F&F revision comment email.")
+                return False
+            if not SystemConfigService.is_department_email_enabled("F&F TEAM"):
+                logger.info("F&F Team email notifications are disabled in settings. Skipping revision comment email.")
                 return False
 
-            smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
-            smtp_user = os.getenv("SMTP_USER", "")
-            smtp_password = os.getenv("SMTP_PASSWORD", "")
-            smtp_from = os.getenv("SMTP_FROM", smtp_user)
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587"))
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user)
 
             recipients_list = EmailService._parse_recipients(recipient)
-            if not recipients_list:
-                env_fallback = os.getenv("FNF_EMAIL_RECIPIENT") or os.getenv("EMAIL_RECIPIENT")
-                if env_fallback:
-                    recipients_list = EmailService._parse_recipients(env_fallback)
 
             if not smtp_from:
                 logger.error("SMTP_FROM not configured for F&F revision comment email")
@@ -604,7 +667,7 @@ class EmailService:
 
             if not recipients_list:
                 logger.warning(
-                    f"F&F Team email recipient is not configured in database or environment. "
+                    f"F&F Team email recipient is not configured in database. "
                     f"Skipping instant revision comment email for {getattr(record, 'employee_name', 'Employee')} ({getattr(record, 'person_number', 'N/A')})."
                 )
                 return False
@@ -631,14 +694,16 @@ class EmailService:
 
             # CC recipient for F&F Team revision comment email
             envelope_recipients = list(recipients_list)
-            cc_recipient = os.getenv("FNF_EMAIL_CC") or os.getenv("EMAIL_CC", "")
-            if cc_recipient:
-                cc_list = EmailService._parse_recipients(cc_recipient)
-                if cc_list:
-                    msg["Cc"] = ", ".join(cc_list)
-                    for c in cc_list:
-                        if c not in envelope_recipients:
-                            envelope_recipients.append(c)
+            cc_list = SystemConfigService.get_department_cc("F&F TEAM")
+            if not cc_list:
+                general_cc = SystemConfigService.get("EMAIL_CC", "")
+                if general_cc:
+                    cc_list = EmailService._parse_recipients(general_cc)
+            if cc_list:
+                msg["Cc"] = ", ".join(cc_list)
+                for c in cc_list:
+                    if c not in envelope_recipients:
+                        envelope_recipients.append(c)
 
             msg.attach(MIMEText(html_body, "html"))
 
@@ -662,19 +727,48 @@ class EmailService:
 
 
     @staticmethod
-    def send_notification_email(records, recipient, stage_name, manager_name=None, is_tomorrow=False):
+    def create_smtp_client():
+        """Create and authenticate a reusable SMTP client session."""
+        try:
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587") or "587")
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            if not smtp_host:
+                return None
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+            server.ehlo()
+            if "starttls" in server.esmtp_features:
+                server.starttls()
+                server.ehlo()
+            if smtp_password:
+                server.login(smtp_user, smtp_password)
+            return server
+        except Exception as e:
+            logger.warning(f"Could not initialize shared SMTP session: {e}")
+            return None
+
+    @staticmethod
+    async def send_notification_email(
+        records,
+        recipient,
+        stage_name,
+        manager_name=None,
+        is_tomorrow=False,
+        smtp_client=None,
+    ):
         """Format the records as HTML and send via SMTP."""
         try:
             # Check if email notifications are enabled
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications are disabled (EMAIL_NOTIFICATION=%s). Skipping %s notification email to %s.", os.getenv("EMAIL_NOTIFICATION"), stage_name, recipient)
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Email notifications are disabled application-wide. Skipping %s notification email to %s.", stage_name, recipient)
                 return False
 
-            smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
-            smtp_user = os.getenv("SMTP_USER", "")
-            smtp_password = os.getenv("SMTP_PASSWORD", "")
-            smtp_from = os.getenv("SMTP_FROM", smtp_user)
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587"))
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user)
 
             if not smtp_from:
                 logger.error("SMTP_FROM not configured in env")
@@ -753,51 +847,73 @@ class EmailService:
             msg["From"] = smtp_from
             msg["To"] = ", ".join(recipients_list)
 
-            # CC recipient for GCC HR and F&F Team daily notifications
+            # CC recipient configured dynamically per department
             envelope_recipients = list(recipients_list)
-            clean_dept_lower = clean_dept.lower()
-            if clean_dept_lower in ("gcc hr", "f&f team", "f&f open", "f&f revision required", "f&f revision", "fnf team", "fnf"):
-                cc_recipient = os.getenv("FNF_EMAIL_CC") or os.getenv("EMAIL_CC", "")
-                cc_list = []
-                if cc_recipient:
-                    cc_list = EmailService._parse_recipients(cc_recipient)
+            cc_list = SystemConfigService.get_department_cc(clean_dept)
+            if not cc_list:
+                general_cc = SystemConfigService.get("EMAIL_CC", "")
+                if general_cc:
+                    cc_list = EmailService._parse_recipients(general_cc)
 
-                # Add extra CC strictly and exclusively for F&F Open List Records (automated notification)
-                if header_title == "F&F Open List Records":
-                    extra_cc = os.getenv("FNF_OPEN_EMAIL_CC", "")
-                    if extra_cc:
-                        for extra in EmailService._parse_recipients(extra_cc):
-                            if extra.lower() not in [c.lower() for c in cc_list]:
-                                cc_list.append(extra)
-
-                if cc_list:
-                    msg["Cc"] = ", ".join(cc_list)
-                    for c in cc_list:
-                        if c not in envelope_recipients:
-                            envelope_recipients.append(c)
+            if cc_list:
+                msg["Cc"] = ", ".join(cc_list)
+                for c in cc_list:
+                    if c not in envelope_recipients:
+                        envelope_recipients.append(c)
 
             msg.attach(MIMEText(html_body, "html"))
 
+            t0 = time.perf_counter()
             try:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
-                    server.ehlo()
-                    if "starttls" in server.esmtp_features:
-                        server.starttls()
-                        server.ehlo()
-                    if smtp_password:
-                        server.login(smtp_user, smtp_password)
-                    server.sendmail(smtp_from, envelope_recipients, msg.as_string())
+                await asyncio.to_thread(
+                    _send_smtp_sync,
+                    smtp_host,
+                    smtp_port,
+                    smtp_user,
+                    smtp_password,
+                    smtp_from,
+                    envelope_recipients,
+                    msg.as_string()
+                )
+                duration_sec = round(time.perf_counter() - t0, 2)
                 logger.info(f"Successfully sent {stage_name} email with {len(records)} records to {', '.join(recipients_list)} (CC: {msg.get('Cc', 'None')}).")
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type=f"{clean_dept.upper().replace(' ', '_')}_NOTIFICATION",
+                        status="SUCCESS",
+                        department=clean_dept,
+                        target_recipient=", ".join(recipients_list),
+                        cc_recipients=msg.get("Cc", ""),
+                        details=f"Dispatched {stage_name} notification with {len(records)} records to {', '.join(recipients_list)}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return True
             except Exception as e:
+                duration_sec = round(time.perf_counter() - t0, 2)
                 logger.error(f"Failed to send {stage_name} email to {', '.join(recipients_list)}: {e}")
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type=f"{clean_dept.upper().replace(' ', '_')}_NOTIFICATION",
+                        status="FAILED",
+                        department=clean_dept,
+                        target_recipient=", ".join(recipients_list),
+                        cc_recipients=msg.get("Cc", ""),
+                        error_message=str(e),
+                        details=f"Failed to send {stage_name} email: {e}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return False
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_notification_email: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_notification_email: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -805,18 +921,18 @@ class EmailService:
         """Format the conflicting/duplicate RM records as HTML and send to HR."""
         try:
             # Check if email notifications are enabled
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications are disabled (EMAIL_NOTIFICATION=%s). Skipping duplicate managers report email to %s.", os.getenv("EMAIL_NOTIFICATION"), recipient)
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Email notifications are disabled application-wide. Skipping duplicate managers report email to %s.", recipient)
                 return False
 
-            smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
-            smtp_user = os.getenv("SMTP_USER", "")
-            smtp_password = os.getenv("SMTP_PASSWORD", "")
-            smtp_from = os.getenv("SMTP_FROM", smtp_user)
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587"))
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user)
 
-            if not smtp_user:
-                logger.error("SMTP_USER not configured in env")
+            if not smtp_from:
+                logger.error("SMTP_FROM not configured")
                 return False
 
             if not records:
@@ -861,9 +977,8 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_duplicate_managers_report: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_duplicate_managers_report: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -939,21 +1054,22 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in fetch_all_data: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in fetch_all_data: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
-    async def run_10am_job():
-        """Daily 10:00 AM Email Job to send all pending approval updates."""
+    async def run_10am_job(target_department: str = None):
+        """Daily 10:00 AM Email Job to send pending approval updates with SMTP reuse."""
         try:
-            # Check if email notifications are enabled
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications are disabled (EMAIL_NOTIFICATION=%s). Skipping 10:00 AM email job entirely.", os.getenv("EMAIL_NOTIFICATION"))
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Email notifications are disabled application-wide. Skipping 10:00 AM email job entirely.")
                 return
 
-            logger.info("Starting consolidated 10:00 AM email job...")
+            clean_target = (target_department or "").strip().upper()
+            is_filtered = bool(clean_target and clean_target != "ALL")
+
+            logger.info(f"Starting 10:00 AM email job (Target: {clean_target or 'ALL'})...")
             records_map = await EmailService.fetch_all_data()
         
             # Fetch department email recipients and RM configs
@@ -1098,68 +1214,59 @@ class EmailService:
                 if is_fnf_revision and not is_fnf_revision_email_sent:
                     fnf_revision_records.append(rec)
                             
-            # Send RM emails in batches
+            # Ultra-fast concurrent email dispatch with parallel concurrency limit
+            sem = asyncio.Semaphore(6)
+            all_dispatch_tasks = []
+
+            # 1. Concurrent RM notifications
             rm_group_items = list(rm_groups.items())
-            total_rm_emails = len(rm_group_items)
-        
-            success_count = 0
-            failure_count = 0
-        
-            if total_rm_emails > 0:
-                BATCH_SIZE = int(os.getenv("EMAIL_BATCH_SIZE", "10"))
-                BATCH_DELAY = int(os.getenv("EMAIL_BATCH_DELAY_SECONDS", "30"))
-            
-                logger.info(f"Starting RM email send. Total unique RMs: {total_rm_emails}. Batch size: {BATCH_SIZE}. Batch delay: {BATCH_DELAY}s.")
-            
-                for i in range(0, total_rm_emails, BATCH_SIZE):
-                    batch = rm_group_items[i:i + BATCH_SIZE]
-                    logger.info(f"Sending RM email batch {i // BATCH_SIZE + 1} (emails {i+1} to {min(i + BATCH_SIZE, total_rm_emails)} of {total_rm_emails})...")
-                
-                    for (rm_name, rm_email), recs in batch:
+            if (not is_filtered or clean_target in ("RM", "REPORTING MANAGER")) and rm_group_items:
+                logger.info(f"Dispatching {len(rm_group_items)} RM notification(s) concurrently...")
+
+                async def _send_rm_task(r_name, r_email, r_recs):
+                    async with sem:
                         try:
-                            success = EmailService.send_notification_email(recs, rm_email, "RM", manager_name=rm_name)
-                            if success:
-                                success_count += 1
-                            else:
-                                failure_count += 1
+                            return await EmailService.send_notification_email(r_recs, r_email, "RM", manager_name=r_name)
                         except Exception as e:
-                            logger.error(f"Failed to send email to RM '{rm_name}' ({rm_email}): {e}")
-                            failure_count += 1
-                        await asyncio.sleep(2)
-                
-                    if i + BATCH_SIZE < total_rm_emails:
-                        logger.info(f"Waiting for {BATCH_DELAY} seconds before next batch...")
-                        await asyncio.sleep(BATCH_DELAY)
-                    
-                logger.info(f"RM Email Job Completed. Success: {success_count}, Failure: {failure_count}")
-            else:
-                logger.info("No pending RM records. Skipping RM emails.")
-            
-            # Send duplicate/conflicting RM records report to HR
-            if duplicate_rm_records:
+                            logger.error(f"Failed to send email to RM '{r_name}' ({r_email}): {e}")
+                            return False
+
+                for (rm_name, rm_email), recs in rm_group_items:
+                    all_dispatch_tasks.append(_send_rm_task(rm_name, rm_email, recs))
+
+            # 2. Duplicate/conflicting RM records report to HR
+            if duplicate_rm_records and (not is_filtered or clean_target in ("HR", "RM")):
                 hr_email = dept_email_map.get("hr")
                 if hr_email:
-                    EmailService.send_duplicate_managers_report(duplicate_rm_records, hr_email)
-                else:
-                    logger.warning("Conflicting RM records found, but HR email is not configured in database.")
-                await asyncio.sleep(2)
-            
-            # Send other department emails
+                    all_dispatch_tasks.append(asyncio.to_thread(EmailService.send_duplicate_managers_report, duplicate_rm_records, hr_email))
+
+            # 3. Concurrent department notifications
             for dept_name, recipient in departments:
                 if not recipient:
-                    logger.info(f"Skipping {dept_name} daily notification: recipient email is not configured.")
                     continue
-                
+                if is_filtered and clean_target != dept_name.strip().upper():
+                    continue
+                if not SystemConfigService.is_department_email_enabled(dept_name):
+                    logger.info(f"Department email notifications are turned OFF for '{dept_name}'. Skipping.")
+                    continue
+
                 records_for_dept = emails_to_send[dept_name]
                 if records_for_dept:
-                    EmailService.send_notification_email(records_for_dept, recipient, dept_name)
-                else:
-                    logger.info(f"No pending records for {dept_name}. Skipping email.")
+                    async def _send_dept_task(d_recs, d_recip, d_name):
+                        async with sem:
+                            return await EmailService.send_notification_email(d_recs, d_recip, d_name)
+
+                    all_dispatch_tasks.append(_send_dept_task(records_for_dept, recipient, dept_name))
+
+            if all_dispatch_tasks:
+                logger.info(f"Parallel dispatch starting for {len(all_dispatch_tasks)} message(s)...")
+                await asyncio.gather(*all_dispatch_tasks, return_exceptions=True)
+                logger.info("All notifications dispatched successfully in parallel.")
 
             # Send daily 10:00 AM F&F Paid (Not in DMS) reminder to F&F Team
             if fnf_paid_records:
                 ff_recipient_list = dept_email_map.get("f&f team")
-                ff_recipient = ", ".join(ff_recipient_list) if ff_recipient_list else os.getenv("EMAIL_RECIPIENT", "")
+                ff_recipient = ", ".join(ff_recipient_list) if ff_recipient_list else ""
                 if ff_recipient:
                     logger.info(f"Sending daily 10:00 AM F&F Paid reminder with {len(fnf_paid_records)} records to {ff_recipient}...")
                     paid_payload = [
@@ -1191,15 +1298,13 @@ class EmailService:
                     except Exception as e:
                         logger.error(f"Error sending daily 10:00 AM F&F Paid reminder email: {e}")
                 else:
-                    logger.warning("F&F Team email recipient not configured. Skipping daily 10:00 AM F&F Paid reminder email.")
+                    logger.warning("F&F Team email recipient not configured in 'email_recipients' table. Skipping daily 10:00 AM F&F Paid reminder email.")
 
             # NOTE: Daily F&F Revision Required email is disabled.
             # Revision emails are now sent instantly when admin marks "Needs Revision" with a comment.
             # if fnf_revision_records:
-            #     ff_recipient = dept_email_map.get("f&f team")
-            #     if not ff_recipient:
-            #         ff_recipient = os.getenv("EMAIL_RECIPIENT", "")
-            #     
+            #     ff_recipient_list = dept_email_map.get("f&f team")
+            #     ff_recipient = ", ".join(ff_recipient_list) if ff_recipient_list else ""
             #     if ff_recipient:
             #         logger.info(f"Sending daily F&F Revision Required email with {len(fnf_revision_records)} records to {ff_recipient}...")
             #         loop = asyncio.get_event_loop()
@@ -1226,9 +1331,8 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in run_10am_job: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in run_10am_job: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -1263,14 +1367,18 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in get_pending_records_for_tomorrow: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in get_pending_records_for_tomorrow: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
-    async def process_stage_for_tomorrow(keyword: str, recipient: str, stage_name: str):
+    async def process_stage_for_tomorrow(keyword: str, recipient: str, stage_name: str, smtp_client=None):
         try:
+            if not SystemConfigService.get_bool("email_notification", True):
+                return
+            if not SystemConfigService.is_department_email_enabled(stage_name):
+                logger.info("Tomorrow alerts for '%s' are disabled in department settings. Skipping alert.", stage_name)
+                return
             if not recipient:
                 logger.info(f"Skipping {stage_name} tomorrow notification: recipient email is not configured.")
                 return
@@ -1283,25 +1391,26 @@ class EmailService:
                 return
             
             logger.info(f"Found {len(records)} pending {stage_name} records for tomorrow. Sending email to {recipient}...")
-            EmailService.send_notification_email(records, recipient, stage_name, is_tomorrow=True)
+            await EmailService.send_notification_email(records, recipient, stage_name, is_tomorrow=True, smtp_client=smtp_client)
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in process_stage_for_tomorrow: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in process_stage_for_tomorrow: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
-    async def run_tomorrow_alert_job():
-        """Tomorrow Alert Job specifically for IT & Security pending actions."""
+    async def run_tomorrow_alert_job(target_department: str = None):
+        """Tomorrow Alert Job specifically for IT & Security pending actions with SMTP reuse."""
         try:
-            # Check if email notifications are enabled
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications are disabled (EMAIL_NOTIFICATION=%s). Skipping tomorrow alert job entirely.", os.getenv("EMAIL_NOTIFICATION"))
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Email notifications are disabled application-wide. Skipping tomorrow alert job entirely.")
                 return
 
-            logger.info("Starting Tomorrow Alerts (IT & Security) email job...")
+            clean_target = (target_department or "").strip().upper()
+            is_filtered = bool(clean_target and clean_target != "ALL")
+
+            logger.info(f"Starting Tomorrow Alerts (IT & Security) email job (Target: {clean_target or 'ALL'})...")
             dept_email_map = {}
             async with async_session() as session:
                 try:
@@ -1312,25 +1421,28 @@ class EmailService:
                 except Exception as e:
                     logger.warning(f"Could not fetch department email recipients: {e}")
 
-            # 1. Process IT Approvals for tomorrow
-            await EmailService.process_stage_for_tomorrow(
-                keyword="IT", 
-                recipient=dept_email_map.get("it"), 
-                stage_name="IT"
-            )
-        
-            # 2. Process Security Approvals for tomorrow
-            await EmailService.process_stage_for_tomorrow(
-                keyword="Security", 
-                recipient=dept_email_map.get("security"), 
-                stage_name="Security"
-            )
+            tomorrow_tasks = []
+            if not is_filtered or clean_target == "IT":
+                tomorrow_tasks.append(EmailService.process_stage_for_tomorrow(
+                    keyword="IT", 
+                    recipient=dept_email_map.get("it"), 
+                    stage_name="IT"
+                ))
+
+            if not is_filtered or clean_target == "SECURITY":
+                tomorrow_tasks.append(EmailService.process_stage_for_tomorrow(
+                    keyword="Security", 
+                    recipient=dept_email_map.get("security"), 
+                    stage_name="Security"
+                ))
+
+            if tomorrow_tasks:
+                await asyncio.gather(*tomorrow_tasks, return_exceptions=True)
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in run_tomorrow_alert_job: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in run_tomorrow_alert_job: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -1343,8 +1455,11 @@ class EmailService:
         """
         try:
             # Check if email notifications are enabled
-            if os.getenv("EMAIL_NOTIFICATION", "on").lower() not in ("on", "true", "1", "yes"):
-                logger.info("Email notifications are disabled (EMAIL_NOTIFICATION=%s). Skipping auto F&F email sending.", os.getenv("EMAIL_NOTIFICATION"))
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Master email toggle is OFF. Skipping auto F&F email sending.")
+                return
+            if not SystemConfigService.get_bool("employee_fnf_email_enabled", True):
+                logger.info("Direct employee F&F email notification is disabled (employee_fnf_email_enabled=off). Skipping.")
                 return
 
             logger.info("Auto F&F Email Sender: Starting check...")
@@ -1366,9 +1481,6 @@ class EmailService:
                 return
 
             logger.info("Auto F&F Email Sender: Found %d record(s) to process.", len(records))
-
-            # Import locally inside function to avoid circular imports
-            from app.models.employee_email_master import EmployeeEmailMaster
 
             for record in records:
                 person_number = record.person_number
@@ -1421,20 +1533,152 @@ class EmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_auto_fnf_emails: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_auto_fnf_emails: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
+
+    @staticmethod
+    async def send_employee_exit_tracker_emails(db: AsyncSession, target_person_number: int | None = None) -> dict:
+        """
+        Scan active separated employee records and dispatch exit clearance status tracker emails.
+        Contains a comprehensive summary of all department clearance stages (RM, IT, Admin, Safety, etc.)
+        along with status and approval dates.
+        """
+        try:
+            if not SystemConfigService.get_bool("email_notification", True):
+                logger.info("Master email toggle is OFF. Skipping employee exit tracker emails.")
+                return {"sent": 0, "skipped": "Master email toggle is off"}
+            if not SystemConfigService.get_bool("employee_exit_tracker_enabled", True):
+                logger.info("Employee exit tracker email is disabled (employee_exit_tracker_enabled=off). Skipping.")
+                return {"sent": 0, "skipped": "Employee exit tracker email disabled"}
+
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587") or "587")
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user or "")
+
+            if not smtp_host:
+                logger.warning("SMTP host not configured. Skipping employee exit tracker emails.")
+                return {"sent": 0, "skipped": "SMTP not configured"}
+
+            query = select(NdcRecord).where(
+                NdcRecord.ndc_stage != "NDC Completed"
+            )
+            if target_person_number:
+                query = select(NdcRecord).where(NdcRecord.person_number == target_person_number)
+
+            res = await db.execute(query)
+            records = res.scalars().all()
+            if not records:
+                logger.info("Employee Exit Tracker: No active clearance records found.")
+                return {"sent": 0, "message": "No active clearance records"}
+
+            sent_count = 0
+            for record in records:
+                pn = record.person_number
+                if not pn:
+                    continue
+
+                emp_stmt = select(EmployeeEmailMaster).where(EmployeeEmailMaster.person_number == pn)
+                emp_res = await db.execute(emp_stmt)
+                emp_master = emp_res.scalar_one_or_none()
+                if not emp_master or not emp_master.email or "@" not in emp_master.email:
+                    continue
+
+                recipient_email = emp_master.email.strip()
+
+                stages_data = [
+                    ("Reporting Manager (RM)", record.rm_approval_date),
+                    ("IT Department", record.it_approval_date),
+                    ("Administration", record.administration_approval_date),
+                    ("Abex", record.abex_approval_date),
+                    ("Telecom", record.telecom_approval_date),
+                    ("Store", record.store_approval_date),
+                    ("Safety", record.safety_approval_date),
+                    ("Security", record.security_approval_date),
+                    ("HR Department", record.hr_approval_date),
+                    ("F&F Settlement (Finance)", record.fnf_completed_date),
+                ]
+
+                formatted_stages = []
+                approved_count = 0
+                for stage_name, app_date in stages_data:
+                    is_app = app_date is not None
+                    if is_app:
+                        approved_count += 1
+                    formatted_stages.append({
+                        "name": stage_name,
+                        "is_approved": is_app,
+                        "date": EmailService._fmt_date(app_date) if is_app else "—",
+                    })
+
+                if approved_count == 0:
+                    continue
+
+                total_stages = len(formatted_stages)
+                progress_pct = round((approved_count / total_stages) * 100)
+
+                html_body = render_template("employee_exit_tracker", {
+                    "name": record.employee_name,
+                    "person_number": record.person_number,
+                    "department": record.department or "—",
+                    "business_unit": record.business_unit or "",
+                    "last_working_date": EmailService._fmt_date(record.last_working_date),
+                    "as_of_date": datetime.now().strftime("%d-%b-%Y"),
+                    "approved_count": approved_count,
+                    "total_stages": total_stages,
+                    "progress_percent": progress_pct,
+                    "stages": formatted_stages,
+                })
+
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"Exit Clearance Status Update - {record.employee_name} ({record.person_number})"
+                msg["From"] = smtp_from
+                msg["To"] = recipient_email
+                msg.attach(MIMEText(html_body, "html"))
+
+                try:
+                    await asyncio.to_thread(
+                        _send_smtp_sync,
+                        smtp_host,
+                        smtp_port,
+                        smtp_user,
+                        smtp_password,
+                        smtp_from,
+                        [recipient_email],
+                        msg.as_string(),
+                    )
+                    sent_count += 1
+                    logger.info("Employee Exit Tracker email dispatched to %s (%d)", recipient_email, pn)
+                    try:
+                        await AuditLogService.log_event(
+                            category="EMAIL",
+                            action_type="EMPLOYEE_EXIT_TRACKER_EMAIL",
+                            status="SUCCESS",
+                            target_recipient=recipient_email,
+                            details=f"Exit clearance status tracker sent to {recipient_email} ({approved_count}/{total_stages} approved)",
+                            db=db
+                        )
+                    except Exception:
+                        pass
+                except Exception as mail_err:
+                    logger.error("Failed to send exit tracker email to %s: %s", recipient_email, mail_err)
+
+            return {"sent": sent_count, "total_scanned": len(records)}
+        except Exception as e:
+            logger.error("Error in send_employee_exit_tracker_emails: %s", e, exc_info=True)
+            return {"sent": 0, "error": str(e)}
 
     @staticmethod
     async def send_password_reset_email(to_email: str, reset_link: str) -> dict:
         """Send a password reset email to the specified recipient."""
         try:
-            smtp_host = os.getenv("SMTP_HOST") or os.getenv("SMTP_SERVER", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
-            smtp_user = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")
-            smtp_password = os.getenv("SMTP_PASSWORD", "")
-            smtp_from = os.getenv("SMTP_FROM", smtp_user)
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587"))
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user)
 
             if not smtp_user:
                 msg = "SMTP user not configured"
@@ -1447,11 +1691,12 @@ class EmailService:
             })
 
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = "Password Reset Request – Adani HR NDC Tracking"
+            msg["Subject"] = "Password Reset Request - Adani HR NDC Tracking"
             msg["From"] = smtp_from
             msg["To"] = to_email
             msg.attach(MIMEText(html_content, "html"))
 
+            t0 = time.perf_counter()
             try:
                 def _send():
                     with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
@@ -1464,16 +1709,125 @@ class EmailService:
                         server.sendmail(smtp_from, [to_email], msg.as_string())
 
                 await asyncio.to_thread(_send)
+                duration_sec = round(time.perf_counter() - t0, 2)
                 logger.info("Password reset email sent successfully to %s", to_email)
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type="PASSWORD_RESET_EMAIL",
+                        status="SUCCESS",
+                        target_recipient=to_email,
+                        details=f"Password reset link dispatched to {to_email}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return {"success": True, "message": "Email sent"}
             except Exception as e:
+                duration_sec = round(time.perf_counter() - t0, 2)
                 logger.error("Failed to send password reset email to %s: %s", to_email, str(e))
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type="PASSWORD_RESET_EMAIL",
+                        status="FAILED",
+                        target_recipient=to_email,
+                        error_message=str(e),
+                        details=f"Failed to send password reset email to {to_email}: {e}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
                 return {"success": False, "message": str(e)}
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_password_reset_email: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_password_reset_email: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
+
+    @staticmethod
+    async def send_new_user_welcome_email(
+        to_email: str,
+        name: str,
+        password: str,
+        admin_name: str,
+        portal_url: str,
+        reset_url: str,
+    ) -> dict:
+        """Send welcome email with portal credentials and reset link to newly added user."""
+        try:
+            smtp_host = SystemConfigService.get("SMTP_HOST", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587") or "587")
+            smtp_user = SystemConfigService.get("SMTP_USER", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user or "")
+
+            if not smtp_host:
+                logger.warning("SMTP host not configured; skipping new user welcome email.")
+                return {"success": False, "message": "SMTP not configured"}
+
+            html_content = render_template("user_credentials_welcome", {
+                "name": name,
+                "email": to_email,
+                "password": password,
+                "admin_name": admin_name,
+                "portal_url": portal_url,
+                "reset_url": reset_url,
+            })
+
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = "Portal Access Granted - NDC Tracking Platform"
+            msg["From"] = smtp_from
+            msg["To"] = to_email
+            msg.attach(MIMEText(html_content, "html"))
+
+            t0 = time.perf_counter()
+            try:
+                def _send():
+                    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+                        server.ehlo()
+                        if "starttls" in server.esmtp_features:
+                            server.starttls()
+                            server.ehlo()
+                        if smtp_password:
+                            server.login(smtp_user, smtp_password)
+                        server.sendmail(smtp_from, [to_email], msg.as_string())
+
+                await asyncio.to_thread(_send)
+                duration_sec = round(time.perf_counter() - t0, 2)
+                logger.info("New user welcome credentials email sent to %s", to_email)
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type="NEW_USER_WELCOME_CREDENTIALS",
+                        status="SUCCESS",
+                        target_recipient=to_email,
+                        admin_recipients=admin_name,
+                        details=f"Portal access credentials dispatched to {to_email} by {admin_name}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
+                return {"success": True, "message": "Email sent"}
+            except Exception as e:
+                duration_sec = round(time.perf_counter() - t0, 2)
+                logger.error("Failed to send new user welcome email to %s: %s", to_email, str(e))
+                try:
+                    await AuditLogService.log_event(
+                        category="EMAIL",
+                        action_type="NEW_USER_WELCOME_CREDENTIALS",
+                        status="FAILED",
+                        target_recipient=to_email,
+                        admin_recipients=admin_name,
+                        error_message=str(e),
+                        details=f"Failed to send welcome credentials email: {e}",
+                        duration_seconds=duration_sec,
+                    )
+                except Exception:
+                    pass
+                return {"success": False, "message": str(e)}
+        except Exception as e:
+            logger.error(f"Error in send_new_user_welcome_email: {e}", exc_info=True)
+            return {"success": False, "message": str(e)}
 
 

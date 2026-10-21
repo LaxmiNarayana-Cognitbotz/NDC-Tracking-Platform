@@ -1,20 +1,49 @@
 import datetime
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 from pathlib import Path
 
-def setup_logging():
-    """Configure server logging to write to a rotating file inside the server directory."""
-    
-    # Define log folder inside backend (server) directory
-    server_dir = Path(__file__).resolve().parent.parent
-    log_dir = server_dir / "logs"
-    log_dir.mkdir(exist_ok=True)
-    
-    log_file = log_dir / "server_logs.log"
-    
-    # Write a clean startup banner to the log file
-    import os
+SERVER_DIR = Path(__file__).resolve().parent.parent
+LOG_DIR = SERVER_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+# Single unified log file for the entire application
+MAIN_LOG_FILE = LOG_DIR / "server_logs.log"
+
+_SERVER_LOGGING_ACTIVE = False
+
+
+def _custom_log_namer(default_name: str) -> str:
+    parts = default_name.rsplit(".log.", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        base, count_str = parts
+        return f"{base}_{int(count_str) + 1}.log"
+    return default_name
+
+
+def _get_shared_file_handler() -> RotatingFileHandler:
+    """Create and configure the single rotating file handler pointing to server_logs.log."""
+    file_handler = RotatingFileHandler(
+        MAIN_LOG_FILE,
+        maxBytes=30 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8"
+    )
+    file_handler.namer = _custom_log_namer
+    file_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%d-%m-%y %I:%M:%S %p"
+    )
+    file_handler.setFormatter(file_formatter)
+    return file_handler
+
+
+def setup_logging(log_filename: str = "server_logs.log") -> Path:
+    """Configure server logging to write exclusively to server_logs.log."""
+    global _SERVER_LOGGING_ACTIVE
+    _SERVER_LOGGING_ACTIVE = True
+
     if not os.environ.get("SERVER_BANNER_PRINTED"):
         now_str = datetime.datetime.now().strftime("%d-%m-%y %I:%M:%S %p")
         banner = (
@@ -24,45 +53,43 @@ def setup_logging():
             f"│  Started : {now_str:<44}│\n"
             f"└────────────────────────────────────────────────────────┘\n"
         )
-        with open(log_file, "a", encoding="utf-8") as f:
+        with open(MAIN_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(banner)
         os.environ["SERVER_BANNER_PRINTED"] = "1"
-    
-    # Create file handler with log rotation (max 30MB per file)
-    file_handler = RotatingFileHandler(log_file, maxBytes=30*1024*1024, backupCount=5, encoding="utf-8")
-    
-    def custom_log_namer(default_name):
-        # default_name is like '.../server_logs.log.1'
-        # Change it to '.../server_logs_2.log'
-        parts = default_name.rsplit(".log.", 1)
-        if len(parts) == 2 and parts[1].isdigit():
-            base, count_str = parts
-            count = int(count_str)
-            return f"{base}_{count + 1}.log"
-        return default_name
-        
-    file_handler.namer = custom_log_namer
-    
-    # Date format: DD-MM-YY HH:MM:SS AM/PM (12-hour format)
-    file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%d-%m-%y %I:%M:%S %p")
-    file_handler.setFormatter(file_formatter)
 
-    # Set root logger to ONLY use the file handler
+    file_handler = _get_shared_file_handler()
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    
-    # Clear default terminal handlers to keep terminal clean
+
     for h in list(root_logger.handlers):
         root_logger.removeHandler(h)
-    
-    if not any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers):
-        root_logger.addHandler(file_handler)
 
-    # Attach file handler to Uvicorn loggers so their startup info gets logged to the file too
+    root_logger.addHandler(file_handler)
+
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         u_logger = logging.getLogger(logger_name)
         if not any(isinstance(h, RotatingFileHandler) for h in u_logger.handlers):
             u_logger.addHandler(file_handler)
 
-    # Silence Uvicorn's noisy file-watcher spam
     logging.getLogger("watchfiles.main").setLevel(logging.WARNING)
+    return MAIN_LOG_FILE
+
+
+def setup_logger(log_filename: str = "server_logs.log") -> Path:
+    """Configures logging for scripts and background tasks, always redirecting to server_logs.log."""
+    file_handler = _get_shared_file_handler()
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    if not any(
+        isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", "") == str(MAIN_LOG_FILE.resolve())
+        for h in root_logger.handlers
+    ):
+        root_logger.addHandler(file_handler)
+
+    return MAIN_LOG_FILE
+
+
+def setup_server_logger(log_filename: str = "server_logs.log") -> Path:
+    """Alias for setup_logging."""
+    return setup_logging(log_filename)

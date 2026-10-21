@@ -1,9 +1,9 @@
 import { useAuth } from "../../context/AuthContext";
-import { Clock, RefreshCw, LogOut } from "lucide-react";
+import { Clock, RefreshCw } from "lucide-react";
 import { Navigate } from "react-router";
 
 export function PendingApproval() {
-  const { user, logout, isLoading, ssoEnabled } = useAuth();
+  const { user, isLoading, ssoEnabled } = useAuth();
 
   if (!ssoEnabled && !isLoading) {
     return <Navigate to="/" replace />;

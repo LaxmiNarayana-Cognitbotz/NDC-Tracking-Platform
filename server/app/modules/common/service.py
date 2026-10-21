@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import BackgroundTasks, HTTPException
 
 from app.dto.common import CommonNDCRecord, FnfUpdateRequest
+from app.helpers.upload.status_mapper import derive_fnf_status
 from app.models.email_recipient import EmailRecipient
 from app.models.ndc_approval import NdcApproval
 from app.models.ndc_record import NdcRecord
+from app.modules.email.service import EmailService
 from config.database import BASE_DIR
 
 logger = logging.getLogger(__name__)
@@ -17,11 +19,7 @@ logger = logging.getLogger(__name__)
 
 class CommonService:
     @staticmethod
-    async def fetch_common_records(
-        db: AsyncSession,
-        start_date: Optional[date] = None,
-        end_date: Optional[date] = None,
-    ) -> List[CommonNDCRecord]:
+    async def fetch_common_records(db: AsyncSession, start_date: Optional[date] = None, end_date: Optional[date] = None) -> List[CommonNDCRecord]:
         """Fetch and construct unified NDC/F&F records."""
         try:
             stmt = select(NdcRecord)
@@ -195,7 +193,6 @@ class CommonService:
             return
 
         try:
-            from app.modules.email.service import EmailService
             result = await db.execute(
                 select(EmailRecipient).where(
                     func.lower(func.trim(EmailRecipient.department)).in_(["f&f team", "fnf team", "f&f", "fnf"])
@@ -206,16 +203,6 @@ class CommonService:
             for r in rows:
                 if r.email:
                     for addr in r.email.replace(";", ",").split(","):
-                        clean = addr.strip()
-                        if clean and clean not in ff_recipients:
-                            ff_recipients.append(clean)
-
-            # Fallback to environment variables if no DB recipient configured
-            if not ff_recipients:
-                import os
-                env_fallback = os.getenv("FNF_EMAIL_RECIPIENT") or os.getenv("EMAIL_RECIPIENT")
-                if env_fallback:
-                    for addr in env_fallback.replace(";", ",").split(","):
                         clean = addr.strip()
                         if clean and clean not in ff_recipients:
                             ff_recipients.append(clean)
@@ -239,7 +226,7 @@ class CommonService:
                 await db.commit()
             else:
                 logger.warning(
-                    f"F&F Team email recipient is not configured (checked 'email_recipients' table and EMAIL_RECIPIENT env). "
+                    f"F&F Team email recipient is not configured in 'email_recipients' table. "
                     f"Skipping revision comment email for record ID {record.id} ({getattr(record, 'person_number', 'N/A')})."
                 )
         except Exception as email_err:
@@ -248,21 +235,7 @@ class CommonService:
     @staticmethod
     def _derive_fnf_status(record: NdcRecord) -> str:
         """Derive a string F&F status from boolean fields for backward compatibility."""
-        try:
-            if record.is_fnf_completed:
-                return "Done"
-            if record.is_fnf_revision:
-                return "Revision Required"
-            # Eligible = NDC Completed AND GCC HR Completed (check ndc_stage only; GCC status checked separately)
-            if record.ndc_stage == "NDC Completed":
-                return "Open"
-            return ""
-        except HTTPException:
-            raise
-        except Exception as e:
-            import logging; logging.error(f'Error in _derive_fnf_status: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        return derive_fnf_status(record)
 
 
     @staticmethod
@@ -357,9 +330,7 @@ class CommonService:
 
 
     @staticmethod
-    async def _propagate_department_dates(
-        record_id: int, fnf_completed_date: date, db: AsyncSession
-    ):
+    async def _propagate_department_dates(record_id: int, fnf_completed_date: date, db: AsyncSession):
         """Auto-fill blank department stage_completed_at dates when F&F is completed."""
         try:
             record_res = await db.execute(select(NdcRecord).where(NdcRecord.id == record_id))

@@ -30,7 +30,7 @@ class UserCreateRequest(BaseModel):
     email: str
     name: str
     role: str
-    password: str
+    password: Optional[str] = None
 
 
 class UserUpdateRequest(BaseModel):

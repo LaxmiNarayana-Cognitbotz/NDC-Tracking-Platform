@@ -270,9 +270,8 @@ class EmployeeEmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in import_employee_emails_excel: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in import_employee_emails_excel: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -280,8 +279,8 @@ class EmployeeEmailService:
         """Generate sample Excel bytes for Employee Configuration import template."""
         try:
             data = [
-                {"Person Number": 10001234, "Employee Name": "John Doe", "Email": "johndoe@company.com"},
-                {"Person Number": 10005678, "Employee Name": "Jane Smith", "Email": "janesmith@company.com"}
+                {"Person Number": 10001234, "Employee Name": "Employee 1", "Email": ""},
+                {"Person Number": 10005678, "Employee Name": "Employee 2", "Email": ""}
             ]
             df = pd.DataFrame(data)
 

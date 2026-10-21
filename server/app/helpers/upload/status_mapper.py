@@ -1,4 +1,8 @@
+import logging
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
+
 # Status normalization — Section 6 of DEVELOPMENT.md
 
 STATUS_MAP: dict[str, str] = {
@@ -27,6 +31,24 @@ APPROVAL_STAGES: list[tuple[str, str, str, int]] = [
     ("Legatrix",          "Approval Type \u2013 Legatrix",     "Legatrix - Approval Status",         13),
 ]
 
+# Canonical list of NDC approval departments and notification teams
+APPROVAL_DEPARTMENTS: list[str] = [
+    "RM",
+    "IT",
+    "Abex",
+    "Telecom",
+    "Store",
+    "Safety",
+    "Administration",
+    "Security",
+    "HR",
+    "GCC HR",
+    "Business Specific",
+    "Final Abex",
+    "Legatrix",
+    "F&F Team",
+]
+
 
 def normalize_status(raw: str | None) -> str | None:
     """Normalize raw Excel status value to internal enum."""
@@ -38,6 +60,22 @@ def normalize_status(raw: str | None) -> str | None:
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in normalize_status: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in normalize_status: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')
+
+
+def derive_fnf_status(record: object) -> str:
+    """Derive a string F&F status from boolean fields for backward compatibility."""
+    try:
+        if getattr(record, "is_fnf_completed", False):
+            return "Done"
+        if getattr(record, "is_fnf_revision", False):
+            return "Revision Required"
+        if getattr(record, "ndc_stage", "") == "NDC Completed":
+            return "Open"
+        return ""
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'Error in derive_fnf_status: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import api from "../lib/axios";
+import axios from "../lib/axios";
 
 export interface User {
   email: string;
@@ -61,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const token = localStorage.getItem("token");
       if (token) {
         try {
-          const profileRes = await api.get<any>("api/auth/me", {
+          const profileRes = await axios.get<any>("/api/auth/me", {
             skipGlobalToast: true,
           } as any);
           const profileData = profileRes.data?.data || profileRes.data;
@@ -92,7 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const loginWithPassword = async (email: string, password: string) => {
-    const res = await api.post<any>("api/auth/login", { email, password });
+    const res = await axios.post<any>("/api/auth/login", { email, password });
     const data = res.data?.data || res.data;
     if (data.token) {
       localStorage.setItem("token", data.token);
@@ -107,7 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const verifyOtp = async (email: string, otpCode: string) => {
-    const res = await api.post<any>("api/auth/verify-otp", { email, otp_code: otpCode });
+    const res = await axios.post<any>("/api/auth/verify-otp", { email, otp_code: otpCode });
     const data = res.data?.data || res.data;
     if (data.token) {
       localStorage.setItem("token", data.token);
@@ -122,7 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const resendOtp = async (email: string) => {
-    const res = await api.post<any>("api/auth/resend-otp", { email });
+    const res = await axios.post<any>("/api/auth/resend-otp", { email });
     return res.data?.data || res.data;
   };
 
@@ -130,7 +130,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       setIsLoading(true);
       try {
-        await api.post<any>("api/auth/logout");
+        await axios.post<any>("/api/auth/logout");
       } catch (err) {
         console.error("Logout request to backend failed", err);
       }

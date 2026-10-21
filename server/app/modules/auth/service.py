@@ -16,7 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.jwt_handler import create_access_token, decode_jwt_token
 from app.models.ndc_auth_audit_log import NdcAuthAuditLog
 from app.models.ndc_user_access import NdcUserAccess
+from app.helpers.config.system_config_service import SystemConfigService
 from app.helpers.email.template_renderer import render_template
+from app.modules.email.service import EmailService
+from app.utils.crypto import encrypt_value
 from app.utils.password import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -32,11 +35,15 @@ class AuthService:
     @staticmethod
     async def send_auth_email(to_email: str, subject: str, body_html: str) -> bool:
         try:
-            smtp_host = os.getenv("SMTP_HOST") or os.getenv("SMTP_SERVER", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
-            smtp_user = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")
-            smtp_password = os.getenv("SMTP_PASSWORD", "")
-            smtp_from = os.getenv("SMTP_FROM", smtp_user)
+            smtp_host = SystemConfigService.get("SMTP_HOST", "") or SystemConfigService.get("SMTP_SERVER", "")
+            smtp_port = int(SystemConfigService.get("SMTP_PORT", "587") or "587")
+            smtp_user = SystemConfigService.get("SMTP_USER", "") or SystemConfigService.get("SMTP_USERNAME", "")
+            smtp_password = SystemConfigService.get("SMTP_PASSWORD", "")
+            smtp_from = SystemConfigService.get("SMTP_FROM", smtp_user)
+
+            if not smtp_host:
+                logger.error("SMTP_HOST not configured")
+                return False
 
             if not smtp_from:
                 logger.error("SMTP_FROM not configured in env")
@@ -68,9 +75,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in send_auth_email: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in send_auth_email: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     # ── Helper: Verify ID Token signature using Azure JWKS ───────────────────────
@@ -127,9 +133,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in verify_azure_token: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in verify_azure_token: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     # ── Helper: Get super admin list from env ─────────────────────────────────────
@@ -142,9 +147,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in _get_super_admins: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in _get_super_admins: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     # ── Auth Service Functions ────────────────────────────────────────────────────
@@ -325,7 +329,6 @@ class AuthService:
             reset_url = f"{origin}/ndc/reset-password?token={reset_token}"
 
             try:
-                from app.modules.email.service import EmailService
                 await EmailService.send_password_reset_email(email, reset_url)
             except Exception as e:
                 logger.error("Failed to trigger password reset email: %s", str(e))
@@ -334,9 +337,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in initiate_forgot_password: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in initiate_forgot_password: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -358,9 +360,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in verify_reset_token_service: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in verify_reset_token_service: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -381,7 +382,9 @@ class AuthService:
             if not new_password or len(new_password.strip()) < 4:
                 raise HTTPException(status_code=400, detail="Password must be at least 4 characters long.")
 
-            user_access.hashed_password = hash_password(new_password.strip())
+            clean_pw = new_password.strip()
+            user_access.hashed_password = hash_password(clean_pw)
+            user_access.encrypted_password = encrypt_value(clean_pw)
             user_access.reset_token = None
             user_access.reset_token_expires_at = None
 
@@ -392,9 +395,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in reset_password_service: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in reset_password_service: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -406,9 +408,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in get_auth_config: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in get_auth_config: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -438,9 +439,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in build_sso_login_url: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in build_sso_login_url: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -642,9 +642,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in handle_sso_callback: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in handle_sso_callback: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -721,9 +720,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in approve_user_access: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in approve_user_access: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -799,9 +797,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in reject_user_access: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in reject_user_access: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -834,9 +831,8 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in logout_user: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in logout_user: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -868,8 +864,7 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in get_current_user_info: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in get_current_user_info: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 

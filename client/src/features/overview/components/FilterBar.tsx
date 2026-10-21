@@ -19,8 +19,8 @@ const APPROVAL_DEPARTMENTS = [
 const APPROVAL_STATUSES = ["Pending", "Completed", "In Progress"];
 
 interface FilterBarProps {
-  departmentFilter: string;
-  setDepartmentFilter: (value: string) => void;
+  departmentFilter?: string;
+  setDepartmentFilter?: (value: string) => void;
   ndcStageFilter: string;
   setNdcStageFilter: (value: string) => void;
   approvalDepartmentFilter: string;
@@ -29,13 +29,11 @@ interface FilterBarProps {
   setApprovalStatusFilter: (value: string) => void;
   searchQuery: string;
   setSearchQuery: (value: string) => void;
-  departments: string[];
+  departments?: string[];
   ndcStages: string[];
 }
 
 export function FilterBar({
-  departmentFilter,
-  setDepartmentFilter,
   ndcStageFilter,
   setNdcStageFilter,
   approvalDepartmentFilter,
@@ -44,7 +42,6 @@ export function FilterBar({
   setApprovalStatusFilter,
   searchQuery,
   setSearchQuery,
-  departments,
   ndcStages,
 }: FilterBarProps) {
   return (

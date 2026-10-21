@@ -53,6 +53,5 @@ async def download_ff_document(person_number: str):
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in download_ff_document: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in download_ff_document: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')

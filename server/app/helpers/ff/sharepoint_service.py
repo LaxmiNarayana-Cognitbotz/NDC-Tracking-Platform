@@ -545,3 +545,75 @@ class SharePointService:
         except Exception as e:
             logger.error(f"Error in download_employee_documents: {e}", exc_info=True)
             raise
+
+    async def list_all_fnf_folders(self, client: httpx.AsyncClient, search: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Lists employee folders and documents currently residing in SharePoint F&F_Documents."""
+        try:
+            site_id = await self.get_site_id(client)
+            drive_id, folder_path = await self.get_drive_details(client, site_id)
+            token = await self.get_access_token()
+            headers = {"Authorization": f"Bearer {token}"}
+
+            fnf_base_path = f"{folder_path}/F&F_Documents" if folder_path else "F&F_Documents"
+            clean_path = "/".join([p for p in fnf_base_path.split("/") if p])
+            encoded_path = self._encode_path_segments(clean_path)
+
+            url: Optional[str] = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{encoded_path}:/children"
+            folders = []
+
+            while url:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 401:
+                    token = await self.get_access_token(force_refresh=True)
+                    headers = {"Authorization": f"Bearer {token}"}
+                    response = await client.get(url, headers=headers)
+
+                if response.status_code != 200:
+                    logger.warning(f"Could not list F&F_Documents folder: {response.status_code} - {response.text}")
+                    break
+
+                data = response.json()
+                items = data.get("value", [])
+                for it in items:
+                    if "folder" in it:
+                        person_num = it.get("name")
+                        if search and search.lower() not in person_num.lower():
+                            continue
+                        folders.append({
+                            "id": it.get("id"),
+                            "person_number": person_num,
+                            "child_count": it.get("folder", {}).get("childCount", 0),
+                            "last_modified_date": it.get("lastModifiedDateTime"),
+                            "web_url": it.get("webUrl"),
+                            "folder_path": f"{clean_path}/{person_num}",
+                        })
+                url = data.get("@odata.nextLink")
+
+            return folders
+        except Exception as e:
+            logger.error(f"Error listing F&F folders in SharePoint: {e}", exc_info=True)
+            return []
+
+    async def delete_employee_folder(self, client: httpx.AsyncClient, person_number: str) -> Dict[str, Any]:
+        """Deletes the employee's F&F documents folder from SharePoint to free storage."""
+        try:
+            site_id = await self.get_site_id(client)
+            drive_id, folder_path = await self.get_drive_details(client, site_id)
+            token = await self.get_access_token()
+            headers = {"Authorization": f"Bearer {token}"}
+
+            files, resolved_path = await self.get_person_folder_files(
+                client, site_id, drive_id, folder_path, person_number
+            )
+            if not resolved_path:
+                return {"status": "not_found", "message": f"Folder for {person_number} not found on SharePoint."}
+
+            encoded_path = self._encode_path_segments(resolved_path)
+            url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{encoded_path}"
+            response = await client.delete(url, headers=headers)
+            if response.status_code in (200, 204):
+                return {"status": "success", "message": f"Folder {resolved_path} deleted successfully."}
+            return {"status": "error", "message": f"Failed to delete folder: {response.status_code} - {response.text}"}
+        except Exception as e:
+            logger.error(f"Error deleting SharePoint folder for {person_number}: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}

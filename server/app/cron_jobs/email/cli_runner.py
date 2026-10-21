@@ -22,6 +22,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
+logger = logging.getLogger(__name__)
+
 async def main():
     try:
         parser = argparse.ArgumentParser(description="NDC Tracking Email Notification CLI")
@@ -49,9 +51,8 @@ async def main():
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in main: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f"Error in main: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal server error occurred.")
 
 if __name__ == "__main__":
     asyncio.run(main())

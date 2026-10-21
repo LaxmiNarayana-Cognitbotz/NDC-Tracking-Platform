@@ -3,7 +3,7 @@ import { Navigate, useNavigate } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import { Eye, EyeOff, Loader2, Mail, Lock, CheckCircle2, ArrowLeft, KeyRound } from "lucide-react";
 import imgLogo from "../../assets/images/image.png";
-import api from "../../lib/axios";
+import axios from "../../lib/axios";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -129,7 +129,7 @@ export function Login() {
 
     setIsForgotSubmitting(true);
     try {
-      const res = await api.post<any>("api/auth/forgot-password", { email: cleanEmail });
+      const res = await axios.post<any>("/api/auth/forgot-password", { email: cleanEmail });
       setForgotSuccess(true);
       toast.success(res.data?.message || "Reset link sent!");
     } catch (err: any) {
@@ -266,7 +266,7 @@ export function Login() {
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="name@adani.com"
+                      placeholder="Enter your email"
                       className="w-full h-10 pl-10 pr-4 text-sm bg-slate-50/50 text-slate-800 rounded-lg border border-slate-200 focus:outline-none focus:border-[#003b70] focus:ring-1 focus:ring-[#003b70] focus:bg-white transition-all placeholder-slate-400 font-medium"
                       required
                     />
@@ -466,7 +466,7 @@ export function Login() {
                     required
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
-                    placeholder="name@adani.com"
+                    placeholder="Enter your email"
                     className="w-full h-10 pl-10 pr-4 text-sm bg-slate-50/50 text-slate-800 rounded-lg border border-slate-200 focus:outline-none focus:border-[#003b70] focus:ring-1 focus:ring-[#003b70] focus:bg-white transition-all placeholder-slate-400 font-medium"
                     disabled={isForgotSubmitting}
                   />

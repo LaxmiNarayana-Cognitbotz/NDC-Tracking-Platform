@@ -34,9 +34,8 @@ def _str_or_none(val) -> str | None:
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in _str_or_none: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in _str_or_none: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
 class IngestService:

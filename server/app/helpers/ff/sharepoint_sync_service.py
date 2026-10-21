@@ -23,16 +23,9 @@ logger = logging.getLogger(__name__)
 
 class SharePointSyncService:
     def __init__(self):
-        try:
-            self.sharepoint = SharePointService()
-            self.upload_dir = Path(os.getenv("UPLOAD_DIR", "uploads"))
-            self.reports_subfolder = os.getenv("SHAREPOINT_REPORTS_SUBFOLDER", "NDC_Reports")
-        except HTTPException:
-            raise
-        except Exception as e:
-            import logging; logging.error(f'Error in __init__: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        self.sharepoint = SharePointService()
+        self.upload_dir = Path(os.getenv("UPLOAD_DIR", "uploads"))
+        self.reports_subfolder = os.getenv("SHAREPOINT_REPORTS_SUBFOLDER", "NDC_Reports")
 
     async def check_and_ingest_new_files(self, db: AsyncSession) -> dict:
         """
@@ -187,9 +180,8 @@ class SharePointSyncService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in check_and_ingest_new_files: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in check_and_ingest_new_files: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
     @staticmethod
     def _extract_person_number(name: str) -> Optional[int]:
@@ -377,9 +369,8 @@ class SharePointSyncService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in sync_fnf_completed_records: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in sync_fnf_completed_records: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
     async def generate_and_upload_fnf_closed_report(self, db: AsyncSession) -> dict:
         """
@@ -538,9 +529,8 @@ class SharePointSyncService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in generate_and_upload_fnf_closed_report: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in generate_and_upload_fnf_closed_report: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
     async def sync_fnf_document_presence(self, db: AsyncSession) -> dict:
         """
@@ -606,6 +596,5 @@ class SharePointSyncService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in sync_fnf_document_presence: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in sync_fnf_document_presence: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')

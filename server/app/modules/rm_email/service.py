@@ -234,9 +234,8 @@ class RMEmailService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in import_rm_emails_excel: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in import_rm_emails_excel: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')
 
 
     @staticmethod
@@ -244,8 +243,8 @@ class RMEmailService:
         """Generate sample Excel bytes for RM Configuration import template."""
         try:
             data = [
-                {"RM Name": "RM North", "Email": "rmnorth@company.com"},
-                {"RM Name": "RM West", "Email": "rmwest@company.com"}
+                {"RM Name": "RM 1", "Email": ""},
+                {"RM Name": "RM 2", "Email": ""}
             ]
             df = pd.DataFrame(data)
 

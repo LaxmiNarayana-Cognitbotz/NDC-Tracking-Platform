@@ -1,8 +1,12 @@
+import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+import secrets
+import string
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +15,8 @@ from app.models.ndc_auth_audit_log import NdcAuthAuditLog
 from app.models.ndc_deleted_record import NdcDeletedRecord
 from app.models.ndc_record import NdcRecord
 from app.models.ndc_user_access import NdcUserAccess
+from app.modules.email.service import EmailService
+from app.utils.crypto import decrypt_value, encrypt_value
 from app.utils.password import hash_password
 
 logger = logging.getLogger(__name__)
@@ -20,12 +26,9 @@ def _get_super_admins() -> list[str]:
     try:
         super_admin_env = os.getenv("SUPER_ADMIN_EMAIL", "")
         return [e.strip().lower() for e in super_admin_env.split(",") if e.strip()]
-    except HTTPException:
-        raise
     except Exception as e:
-        import logging; logging.error(f'Error in _get_super_admins: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in _get_super_admins: {e}', exc_info=True)
+        return []
 
 
 class UsersService:
@@ -72,6 +75,7 @@ class UsersService:
                     "name": u.name,
                     "role": u.role,
                     "status": u.status,
+                    "password": decrypt_value(u.encrypted_password) if u.encrypted_password else None,
                     "requested_at": u.requested_at.isoformat() if u.requested_at else None,
                     "approved_at": u.approved_at.isoformat() if u.approved_at else None,
                     "approved_by": u.approved_by,
@@ -136,14 +140,14 @@ class UsersService:
         email: str,
         name: str,
         role: str,
-        password: str,
+        password: Optional[str],
         db: AsyncSession,
+        admin_email: Optional[str] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> dict:
-        """Create a new user."""
+        """Create a new user, optionally generate secure password, and send access email."""
         try:
             email = email.strip().lower()
-            # if not email.endswith("@adani.com"):
-            #     raise HTTPException(status_code=400, detail="Only @adani.com email addresses are allowed.")
 
             stmt = select(NdcUserAccess).where(NdcUserAccess.email == email)
             res = await db.execute(stmt)
@@ -151,18 +155,77 @@ class UsersService:
             if existing:
                 raise HTTPException(status_code=400, detail="User with this email already exists.")
 
+            # Determine admin name
+            admin_name = "Super Administrator"
+            if admin_email:
+                adm_stmt = select(NdcUserAccess).where(NdcUserAccess.email == admin_email.strip().lower())
+                adm_res = await db.execute(adm_stmt)
+                adm_user = adm_res.scalar_one_or_none()
+                if adm_user and adm_user.name:
+                    admin_name = adm_user.name
+
+            # Determine raw password
+            if password and password.strip():
+                final_password = password.strip()
+            else:
+                # Generate 8-character secure alphanumeric password
+                letters = string.ascii_letters
+                digits = string.digits
+                final_password = (
+                    secrets.choice(string.ascii_uppercase) +
+                    secrets.choice(string.ascii_lowercase) +
+                    secrets.choice(string.digits) +
+                    "".join(secrets.choice(letters + digits) for _ in range(5))
+                )
+
+            # Generate password reset token valid for 7 days
+            reset_token = secrets.token_urlsafe(32)
+            token_expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=7)
+
             new_user = NdcUserAccess(
                 email=email,
                 name=name,
                 role=role,
                 status="approved",
-                hashed_password=hash_password(password),
+                hashed_password=hash_password(final_password),
+                encrypted_password=encrypt_value(final_password),
+                reset_token=reset_token,
+                reset_token_expires_at=token_expiry,
                 approved_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                approved_by="super_admin"
+                approved_by=admin_email or "super_admin"
             )
             db.add(new_user)
             await db.commit()
-            return {"message": "User created successfully", "email": email}
+
+            # Dispatch portal credentials welcome email asynchronously to make saving fast
+            portal_url = os.getenv("PORTAL_URL", "http://localhost:5173").rstrip("/")
+            reset_url = f"{portal_url}/ndc/reset-password?token={reset_token}"
+            if background_tasks:
+                background_tasks.add_task(
+                    EmailService.send_new_user_welcome_email,
+                    to_email=email,
+                    name=name,
+                    password=final_password,
+                    admin_name=admin_name,
+                    portal_url=portal_url,
+                    reset_url=reset_url,
+                )
+            else:
+                asyncio.create_task(
+                    EmailService.send_new_user_welcome_email(
+                        to_email=email,
+                        name=name,
+                        password=final_password,
+                        admin_name=admin_name,
+                        portal_url=portal_url,
+                        reset_url=reset_url,
+                    )
+                )
+
+            return {
+                "message": f"User created successfully! Portal login credentials have been dispatched to {email}.",
+                "email": email,
+            }
         except HTTPException:
             raise
         except Exception as e:
@@ -178,6 +241,7 @@ class UsersService:
         user_status: str | None,
         password: str | None,
         db: AsyncSession,
+        current_user_email: str | None = None,
     ) -> dict:
         """Update an existing user."""
         try:
@@ -189,8 +253,14 @@ class UsersService:
             if not user_access:
                 raise HTTPException(status_code=404, detail="User not found.")
 
-            super_admins = _get_super_admins()
+            # Prevent a logged-in user from downgrading or revoking their own account
+            if current_user_email and email_clean == current_user_email.strip().lower():
+                if role and role != "super_admin":
+                    raise HTTPException(status_code=400, detail="Cannot downgrade your own Super Admin account.")
+                if user_status and user_status != "approved":
+                    raise HTTPException(status_code=400, detail="Cannot revoke your own access while logged in.")
 
+            super_admins = _get_super_admins()
             if email_clean in super_admins:
                 if role and role != "super_admin":
                     raise HTTPException(status_code=400, detail="Cannot downgrade root super admins configured via environment variables.")
@@ -204,7 +274,9 @@ class UsersService:
             if user_status is not None:
                 user_access.status = user_status
             if password is not None and password.strip() != "":
-                user_access.hashed_password = hash_password(password)
+                clean_pw = password.strip()
+                user_access.hashed_password = hash_password(clean_pw)
+                user_access.encrypted_password = encrypt_value(clean_pw)
 
             db.add(user_access)
             await db.commit()
@@ -217,12 +289,16 @@ class UsersService:
 
 
     @staticmethod
-    async def delete_user_service(email: str, db: AsyncSession) -> dict:
+    async def delete_user_service(email: str, db: AsyncSession, current_user_email: str | None = None) -> dict:
         """Delete a user by email."""
         try:
             email_clean = email.strip().lower()
-            super_admins = _get_super_admins()
 
+            # Prevent self-deletion
+            if current_user_email and email_clean == current_user_email.strip().lower():
+                raise HTTPException(status_code=400, detail="Cannot delete your own account while logged in.")
+
+            super_admins = _get_super_admins()
             if email_clean in super_admins:
                 raise HTTPException(status_code=400, detail="Cannot delete root super admins configured via environment variables.")
 
@@ -232,6 +308,17 @@ class UsersService:
 
             if not user_access:
                 raise HTTPException(status_code=404, detail="User not found.")
+
+            # If deleting a super_admin, verify there is at least one other approved super_admin
+            if user_access.role == "super_admin":
+                count_stmt = select(func.count(NdcUserAccess.id)).where(
+                    NdcUserAccess.role == "super_admin",
+                    NdcUserAccess.status == "approved",
+                    NdcUserAccess.email != email_clean,
+                )
+                other_sa_count = (await db.execute(count_stmt)).scalar() or 0
+                if other_sa_count == 0:
+                    raise HTTPException(status_code=400, detail="Cannot delete the only remaining Super Admin in the system.")
 
             await db.delete(user_access)
             await db.commit()
@@ -283,7 +370,12 @@ class UsersService:
 
 
     @staticmethod
-    async def delete_ndc_record(person_number: int, deleted_by: str, reason: str | None, db: AsyncSession) -> dict:
+    async def delete_ndc_record(
+        person_number: int,
+        deleted_by: str,
+        reason: str | None,
+        db: AsyncSession,
+    ) -> dict:
         """Delete an NDC employee record and persistently add them to the exclusion list."""
         try:
             # 1. Fetch the employee record

@@ -402,7 +402,7 @@ export function EmailConfig() {
                 value={newRecipient.email}
                 onChange={(e) => setNewRecipient({ ...newRecipient, email: e.target.value })}
                 className="w-full px-3 py-2 border border-border rounded-[4px] bg-input-background focus:outline-none focus:ring-1 focus:ring-primary text-sm text-foreground"
-                placeholder="email@adani.com"
+                placeholder="Enter email address"
               />
             </div>
 
@@ -481,7 +481,7 @@ export function EmailConfig() {
                 value={editDraft.email}
                 onChange={(e) => setEditDraft({ ...editDraft, email: e.target.value })}
                 className="w-full px-3 py-2 border border-border rounded-[4px] bg-input-background focus:outline-none focus:ring-1 focus:ring-primary text-sm text-foreground"
-                placeholder="email@adani.com"
+                placeholder="Enter email address"
               />
             </div>
 

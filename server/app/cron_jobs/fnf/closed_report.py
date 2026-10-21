@@ -1,9 +1,10 @@
-from fastapi import HTTPException
 import asyncio
 import datetime
 import logging
-import os
 
+from fastapi import HTTPException
+
+from app.helpers.config.system_config_service import SystemConfigService
 from app.helpers.ff.sharepoint_sync_service import SharePointSyncService
 from config.database import async_session
 
@@ -12,27 +13,23 @@ logger = logging.getLogger(__name__)
 async def fnf_closed_report_loop():
     """
     Background polling loop that generates a FNF-Closed Excel report and uploads
-    it to SharePoint at the same daily times as the SharePoint file-sync loop
-    (controlled by SHAREPOINT_SYNC_SCHEDULED_TIMES env var).
+    it to SharePoint at the configured daily times.
     """
     try:
-        enabled = os.getenv("SHAREPOINT_SYNC_BACKGROUND_POLL", "true").lower() == "true"
+        enabled_str = await SystemConfigService.get_from_db("sharepoint_sync_background_poll", default="true")
+        enabled = enabled_str.strip().lower() in ("true", "1", "yes", "on", "t")
         if not enabled:
-            logger.info("FNF Closed Report scheduler is disabled (SHAREPOINT_SYNC_BACKGROUND_POLL=false).")
+            logger.info("FNF Closed Report scheduler is disabled (sharepoint_sync_background_poll=false).")
             return
-
-        # Re-use the same scheduled times as the main SharePoint sync
-        times_str = os.getenv("SHAREPOINT_SYNC_SCHEDULED_TIMES", "10:10,13:10,16:10,19:10")
-        scheduled_times = {t.strip() for t in times_str.split(",") if t.strip()}
-        logger.info(
-            f"Starting FNF Closed Report scheduler. Triggers daily at: {', '.join(sorted(scheduled_times))}"
-        )
 
         sync_service = SharePointSyncService()
         last_trigger_key = None
 
         while True:
             try:
+                times_str = await SystemConfigService.get_from_db("sharepoint_sync_schedule_times", default="")
+                scheduled_times = {t.strip() for t in times_str.split(",") if t.strip()}
+
                 now = datetime.datetime.now()
                 time_str = now.strftime("%H:%M")
                 date_str = now.strftime("%Y-%m-%d")
@@ -73,6 +70,5 @@ async def fnf_closed_report_loop():
     except HTTPException:
         raise
     except Exception as e:
-        import logging; logging.error(f'Error in fnf_closed_report_loop: {e}', exc_info=True)
-        import fastapi
-        raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+        logger.error(f'Error in fnf_closed_report_loop: {e}', exc_info=True)
+        raise HTTPException(status_code=500, detail='An internal server error occurred.')

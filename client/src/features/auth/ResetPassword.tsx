@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams, useNavigate, Link } from "react-router";
 import { Eye, EyeOff, Loader2, Lock, CheckCircle2, AlertCircle, ArrowLeft } from "lucide-react";
-import api from "../../lib/axios";
+import axios from "../../lib/axios";
 import { toast } from "sonner";
 
 export function ResetPassword() {
@@ -33,7 +33,7 @@ export function ResetPassword() {
 
     const verifyToken = async () => {
       try {
-        const res = await api.get<any>(`api/auth/verify-reset-token/${token}`);
+        const res = await axios.get<any>(`/api/auth/verify-reset-token/${token}`);
         // API wraps response in { status, data, message } envelope
         const responseData = res.data?.data || res.data;
         if (responseData?.valid) {
@@ -77,7 +77,7 @@ export function ResetPassword() {
 
     setIsSubmitting(true);
     try {
-      await api.post("api/auth/reset-password", {
+      await axios.post("/api/auth/reset-password", {
         token,
         new_password: newPassword.trim(),
       });

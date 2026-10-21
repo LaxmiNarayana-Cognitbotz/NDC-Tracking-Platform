@@ -44,7 +44,12 @@ async def get_all_analytics_records_for_common(db: AsyncSession = Depends(get_db
 
 
 @router.put("/ndc-records/{record_id}")
-async def update_fnf_status_route(record_id: int, body: FnfUpdateRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def update_fnf_status_route(
+    record_id: int,
+    body: FnfUpdateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     """Update F&F status for a record. Triggers department date propagation on completion."""
     try:
         record = await CommonService.update_fnf_status(record_id, body, db, background_tasks=background_tasks)

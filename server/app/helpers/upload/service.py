@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -6,6 +7,8 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.helpers.upload.ingest_service import IngestService
+
+logger = logging.getLogger(__name__)
 
 
 class UploadService:
@@ -55,6 +58,5 @@ class UploadService:
         except HTTPException:
             raise
         except Exception as e:
-            import logging; logging.error(f'Error in handle_ndc_upload: {e}', exc_info=True)
-            import fastapi
-            raise fastapi.HTTPException(status_code=500, detail='An internal server error occurred.')
+            logger.error(f'Error in handle_ndc_upload: {e}', exc_info=True)
+            raise HTTPException(status_code=500, detail='An internal server error occurred.')

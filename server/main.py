@@ -1,3 +1,11 @@
+import sys
+if sys.platform == "win32":
+    import asyncio
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -5,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.helpers.startup.lifespan import lifespan
+from app.modules.admin_control.router import router as admin_control_router
 from app.modules.auth import router as auth_router
 from app.modules.common import router as common_router
 from app.modules.email import router as email_router
@@ -58,6 +67,7 @@ app.include_router(rm_email_router.router)
 app.include_router(employee_email_router.router)
 app.include_router(auth_router.router)
 app.include_router(users_router.admin_router)
+app.include_router(admin_control_router)
 app.include_router(common_router.router)
 
 

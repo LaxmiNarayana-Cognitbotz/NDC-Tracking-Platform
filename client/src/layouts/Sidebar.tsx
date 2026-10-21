@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router";
-import { LayoutDashboard, BarChart3, ChevronLeft, ChevronRight, FileText, Mail, Settings, Users, LogOut, Contact } from "lucide-react";
+import { LayoutDashboard, BarChart3, ChevronLeft, ChevronRight, FileText, Mail, Settings, LogOut, Contact } from "lucide-react";
 import imgLogo from "../assets/images/image.png";
 import { useSidebar } from "../context/SidebarContext";
 import { useAuth } from "../context/AuthContext";
@@ -115,14 +115,15 @@ export function Sidebar() {
                   ? "bg-gradient-to-r from-[#003b70] to-[#1e5a8e] text-white shadow-md shadow-[#003b70]/10"
                   : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               } ${isCollapsed ? "justify-center" : ""}`}
-              title={isCollapsed ? "User Management" : ""}
+              title={isCollapsed ? "Admin Management" : ""}
             >
-              <Users className="w-4 h-4 flex-shrink-0" />
-              {!isCollapsed && <span className="font-medium text-xs whitespace-nowrap">User Management</span>}
+              <Settings className="w-4 h-4 flex-shrink-0" />
+              {!isCollapsed && <span className="font-medium text-xs whitespace-nowrap">Admin Management</span>}
             </Link>
           </div>
         </div>
       )}
+
 
       {user && !isCollapsed && (
         <div className="p-3 border-t border-sidebar-border bg-sidebar-accent/5">

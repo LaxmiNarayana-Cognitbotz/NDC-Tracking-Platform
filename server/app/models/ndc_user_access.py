@@ -12,6 +12,7 @@ class NdcUserAccess(Base):
     role = Column(String(50), nullable=False, default="admin")
     status = Column(String(50), nullable=False, default="pending")
     hashed_password = Column(String(255), nullable=True)
+    encrypted_password = Column(String(500), nullable=True)
     approval_token = Column(String(255), unique=True, nullable=True)
     reset_token = Column(String(255), unique=True, nullable=True)
     reset_token_expires_at = Column(DateTime, nullable=True)

@@ -131,14 +131,14 @@ export function SharePointDocsTab() {
                 <span
                   tabIndex={0}
                   className="inline-flex items-center justify-center text-sky-700 hover:text-sky-950 cursor-pointer transition-colors p-0.5 rounded-full hover:bg-sky-200/50"
-                  title="Expiry: 7/29/2027"
-                  aria-label="Expiry: 7/29/2027"
+                  title="Expiry: 29/07/27 – You need to renew this SharePoint account with the IT department"
+                  aria-label="Expiry: 29/07/27 – You need to renew this SharePoint account with the IT department"
                 >
                   <Info className="w-3.5 h-3.5" />
                 </span>
               </TooltipTrigger>
-              <TooltipContent side="right" className="text-xs font-medium">
-                Expiry: 7/29/2027
+              <TooltipContent side="right" className="text-xs font-medium max-w-xs leading-relaxed">
+                Expiry: 29/07/27. You need to renew this SharePoint account with the IT department.
               </TooltipContent>
             </Tooltip>
           </div>

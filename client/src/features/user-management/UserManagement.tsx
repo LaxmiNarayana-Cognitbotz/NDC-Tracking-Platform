@@ -15,11 +15,7 @@ import { EmailConfigTab } from "./EmailConfigTab";
 import { SharePointDocsTab } from "./SharePointDocsTab";
 import { LogsTab } from "./LogsTab";
 
-import { ENHANCEMENT_FEATURES } from "../../config/features";
-
-const VALID_TABS = ENHANCEMENT_FEATURES
-  ? ["users", "credentials", "scheduler", "email_config", "sharepoint_docs", "logs"]
-  : ["users"];
+const VALID_TABS = ["users", "credentials", "scheduler", "email_config", "sharepoint_docs", "logs"];
 
 export function UserManagement() {
   const { user: currentUser } = useAuth();
@@ -92,9 +88,7 @@ export function UserManagement() {
             <div>
               <h1 className="text-2xl font-bold text-foreground tracking-tight">Admin & System Control Center</h1>
               <p className="text-muted-foreground text-xs mt-0.5">
-                {ENHANCEMENT_FEATURES
-                  ? "Centralized control for user accounts, background automation, service credentials, email notifications, SharePoint files, and system logs."
-                  : "Manage user account approvals, roles, and administrative access permissions."}
+                Centralized control for user accounts, background automation, service credentials, email notifications, SharePoint files, and system logs.
               </p>
             </div>
           </div>
@@ -114,49 +108,45 @@ export function UserManagement() {
               Users & Access
             </TabsTrigger>
 
-            {ENHANCEMENT_FEATURES && (
-              <>
-                <TabsTrigger
-                  value="credentials"
-                  className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
-                >
-                  <Key className="w-3.5 h-3.5" />
-                  Credentials & Alerts
-                </TabsTrigger>
+            <TabsTrigger
+              value="credentials"
+              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
+            >
+              <Key className="w-3.5 h-3.5" />
+              Credentials & Alerts
+            </TabsTrigger>
 
-                <TabsTrigger
-                  value="scheduler"
-                  className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
-                >
-                  <Clock className="w-3.5 h-3.5" />
-                  Automation & Sync
-                </TabsTrigger>
+            <TabsTrigger
+              value="scheduler"
+              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              Automation & Sync
+            </TabsTrigger>
 
-                <TabsTrigger
-                  value="email_config"
-                  className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
-                >
-                  <Mail className="w-3.5 h-3.5" />
-                  Email & CC Rules
-                </TabsTrigger>
+            <TabsTrigger
+              value="email_config"
+              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              Email & CC Rules
+            </TabsTrigger>
 
-                <TabsTrigger
-                  value="sharepoint_docs"
-                  className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
-                >
-                  <Folder className="w-3.5 h-3.5" />
-                  SharePoint Documents
-                </TabsTrigger>
+            <TabsTrigger
+              value="sharepoint_docs"
+              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
+            >
+              <Folder className="w-3.5 h-3.5" />
+              SharePoint Documents
+            </TabsTrigger>
 
-                <TabsTrigger
-                  value="logs"
-                  className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
-                >
-                  <FileText className="w-3.5 h-3.5" />
-                  Audit Logs
-                </TabsTrigger>
-              </>
-            )}
+            <TabsTrigger
+              value="logs"
+              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-[4px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Audit Logs
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -165,34 +155,30 @@ export function UserManagement() {
           <UserTab />
         </TabsContent>
 
-        {ENHANCEMENT_FEATURES && (
-          <>
-            {/* Tab 2: Dynamic Credentials & Sync Failure Alerts */}
-            <TabsContent value="credentials" className="m-0 focus-visible:outline-none">
-              <CredentialsTab />
-            </TabsContent>
+        {/* Tab 2: Dynamic Credentials & Sync Failure Alerts */}
+        <TabsContent value="credentials" className="m-0 focus-visible:outline-none">
+          <CredentialsTab />
+        </TabsContent>
 
-            {/* Tab 3: Automation & Sync (Unified Scheduler and Manual Sync) */}
-            <TabsContent value="scheduler" className="m-0 focus-visible:outline-none">
-              <SchedulerTab />
-            </TabsContent>
+        {/* Tab 3: Automation & Sync (Unified Scheduler and Manual Sync) */}
+        <TabsContent value="scheduler" className="m-0 focus-visible:outline-none">
+          <SchedulerTab />
+        </TabsContent>
 
-            {/* Tab 5: Dynamic Email Config, Timings & Immediate Dispatch */}
-            <TabsContent value="email_config" className="m-0 focus-visible:outline-none">
-              <EmailConfigTab />
-            </TabsContent>
+        {/* Tab 4: Dynamic Email Config, Timings & Immediate Dispatch */}
+        <TabsContent value="email_config" className="m-0 focus-visible:outline-none">
+          <EmailConfigTab />
+        </TabsContent>
 
-            {/* Tab 6: SharePoint Document Management & Re-Sync */}
-            <TabsContent value="sharepoint_docs" className="m-0 focus-visible:outline-none">
-              <SharePointDocsTab />
-            </TabsContent>
+        {/* Tab 5: SharePoint Document Management & Re-Sync */}
+        <TabsContent value="sharepoint_docs" className="m-0 focus-visible:outline-none">
+          <SharePointDocsTab />
+        </TabsContent>
 
-            {/* Tab 7: System Audit Logs */}
-            <TabsContent value="logs" className="m-0 focus-visible:outline-none">
-              <LogsTab />
-            </TabsContent>
-          </>
-        )}
+        {/* Tab 6: System Audit Logs */}
+        <TabsContent value="logs" className="m-0 focus-visible:outline-none">
+          <LogsTab />
+        </TabsContent>
       </Tabs>
     </div>
   );

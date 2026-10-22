@@ -108,8 +108,6 @@ client/src/
 ├── components/                Reusable presentation components
 │   ├── common/                Authentication guards (ProtectedRoute), error boundary wrappers
 │   └── ui/                    Design system primitives (buttons, dialogs, forms, selects)
-├── config/
-│   └── features.ts            Feature flag logic resolving VITE_ENHANCEMENT_FEATURES
 ├── context/
 │   ├── AuthContext.tsx        Authentication state, token persistence, and role resolution
 │   └── SidebarContext.tsx     Layout navigation state management
@@ -158,8 +156,5 @@ npm run build
   }
   ```
 
-#### Symptom 3: Administrative tabs are absent from the User Management view
-* Resolution: Verify that `VITE_ENHANCEMENT_FEATURES=true` in `client/.env`. When set to `false`, the client deliberately hides the Credentials, Scheduler, Email Config, and Logs tabs.
-
-#### Symptom 4: Browser displays a 404 error upon hard refresh in production
+#### Symptom 3: Browser displays a 404 error upon hard refresh in production
 * Resolution: In production environments, client-side routing requires the host server (FastAPI `spa_server` or Nginx) to route all non-file requests to `index.html`. Verify that the hosting server has SPA fallback routing enabled.

@@ -1,6 +1,5 @@
 """Admin control service handling configurations, automation pipelines, and audit logs."""
 
-import asyncio
 import csv
 import importlib
 import io
@@ -44,6 +43,7 @@ from app.dto.admin_control import (
     EmployeeFnfEmailConfigRequest,
     SharePointUploadRequest,
 )
+from app.models.email_recipient import EmailRecipient
 from app.modules.email.service import EmailService
 from config.database import async_session
 
@@ -251,7 +251,6 @@ class AdminControlService:
     async def create_department_config(payload: DepartmentConfigCreateRequest, db: AsyncSession) -> EmailDepartmentConfig:
         """Create a new department email and CC configuration and sync main recipient."""
         try:
-            from app.models.email_recipient import EmailRecipient
             dept_name = payload.department.strip().upper()
             existing = await db.execute(select(EmailDepartmentConfig).where(EmailDepartmentConfig.department == dept_name))
             if existing.scalar_one_or_none():

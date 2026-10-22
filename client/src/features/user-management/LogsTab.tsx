@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import axios from "../../lib/axios";
 import {
-  FileText, Download, Search, RefreshCw, Loader2, CheckCircle2,
+  FileText, Search, RefreshCw, Loader2, CheckCircle2,
   XCircle, AlertTriangle, ChevronLeft, ChevronRight, Eye, FileSpreadsheet,
-  Calendar, Clock, Terminal, Building2, Mail, Copy, Check
+  Calendar, Clock, Terminal, Building2, Mail, Copy, Check, X
 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../../components/ui/dialog";
@@ -30,6 +30,19 @@ export function LogsTab() {
   const [categoryFilter, setCategoryFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [search, setSearch] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const startInputRef = useRef<HTMLInputElement>(null);
+  const endInputRef = useRef<HTMLInputElement>(null);
+
+  const formatDisplayDate = (dStr: string) => {
+    if (!dStr) return "";
+    const parts = dStr.split("-");
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+    return dStr;
+  };
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(20);
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
@@ -144,16 +157,34 @@ export function LogsTab() {
     return `${val}s`;
   };
 
-  const fetchLogs = async () => {
+  const fetchLogs = async (overrides?: {
+    category?: string;
+    status?: string;
+    search?: string;
+    startDate?: string;
+    endDate?: string;
+    page?: number;
+    limit?: number;
+  }) => {
     setIsLoading(true);
     try {
+      const activeCategory = overrides?.category !== undefined ? overrides.category : categoryFilter;
+      const activeStatus = overrides?.status !== undefined ? overrides.status : statusFilter;
+      const activeSearch = overrides?.search !== undefined ? overrides.search : search;
+      const activeStart = overrides?.startDate !== undefined ? overrides.startDate : startDate;
+      const activeEnd = overrides?.endDate !== undefined ? overrides.endDate : endDate;
+      const activePage = overrides?.page !== undefined ? overrides.page : page;
+      const activeLimit = overrides?.limit !== undefined ? overrides.limit : limit;
+
       const res = await axios.get<any>("/api/admin/control/logs", {
         params: {
-          category: categoryFilter !== "ALL" ? categoryFilter : undefined,
-          status: statusFilter !== "ALL" ? statusFilter : undefined,
-          search: search.trim() || undefined,
-          page,
-          limit,
+          category: activeCategory !== "ALL" ? activeCategory : undefined,
+          status: activeStatus !== "ALL" ? activeStatus : undefined,
+          search: activeSearch.trim() || undefined,
+          start_date: activeStart || undefined,
+          end_date: activeEnd || undefined,
+          page: activePage,
+          limit: activeLimit,
         },
       });
       const data = res.data?.data || res.data || {};
@@ -165,37 +196,62 @@ export function LogsTab() {
     }
   };
 
+  const isFirstMount = useRef(true);
+
+  // Live debounced search effect - searches in real-time as you type, just like Departments & CC rules
   useEffect(() => {
-    fetchLogs();
-  }, [categoryFilter, statusFilter, page]);
-
-
-
-  const handleDownloadCsv = async () => {
-    setIsDownloading(true);
-    try {
-      const response = await axios.get("/api/admin/control/logs/download", {
-        params: {
-          category: categoryFilter !== "ALL" ? categoryFilter : undefined,
-          status: statusFilter !== "ALL" ? statusFilter : undefined,
-        },
-        responseType: "blob",
-      });
-
-      const blob = new Blob([response.data], { type: "text/csv;charset=utf-8;" });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.setAttribute("download", `System_Audit_Logs_${new Date().toISOString().slice(0, 10)}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      toast.success("CSV log file downloaded successfully!");
-    } catch {
-      toast.error("Failed to download CSV logs");
-    } finally {
-      setIsDownloading(false);
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      fetchLogs();
+      return;
     }
+    const timer = setTimeout(() => {
+      setPage(1);
+      fetchLogs({ search, page: 1 });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const handleClearSearch = () => {
+    setSearch("");
+    setPage(1);
+    fetchLogs({ search: "", page: 1 });
+  };
+
+  const handleCategoryChange = (val: string) => {
+    setCategoryFilter(val);
+    setPage(1);
+    fetchLogs({ category: val, page: 1 });
+  };
+
+  const handleStatusChange = (val: string) => {
+    setStatusFilter(val);
+    setPage(1);
+    fetchLogs({ status: val, page: 1 });
+  };
+
+  const handleStartDateChange = (val: string) => {
+    setStartDate(val);
+    setPage(1);
+    fetchLogs({ startDate: val, page: 1 });
+  };
+
+  const handleEndDateChange = (val: string) => {
+    setEndDate(val);
+    setPage(1);
+    fetchLogs({ endDate: val, page: 1 });
+  };
+
+  const handleClearDates = () => {
+    setStartDate("");
+    setEndDate("");
+    setPage(1);
+    fetchLogs({ startDate: "", endDate: "", page: 1 });
+  };
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+    fetchLogs({ page: newPage });
   };
 
   const handleDownloadExcel = async () => {
@@ -206,13 +262,15 @@ export function LogsTab() {
           category: categoryFilter !== "ALL" ? categoryFilter : undefined,
           status: statusFilter !== "ALL" ? statusFilter : undefined,
           search: search.trim() || undefined,
+          start_date: startDate || undefined,
+          end_date: endDate || undefined,
           page: 1,
-          limit: 500,
+          limit: 5000,
         },
       });
       const data = res.data?.data?.logs || res.data?.logs || [];
       if (data.length === 0) {
-        toast.error("No log records available to export.");
+        toast.error("No log records found for the selected date range.");
         return;
       }
 
@@ -233,8 +291,21 @@ export function LogsTab() {
       const worksheet = XLSX.utils.json_to_sheet(exportRows);
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Audit Logs");
-      XLSX.writeFile(workbook, `System_Audit_Logs_${new Date().toISOString().slice(0, 10)}.xlsx`);
-      toast.success("Excel audit logs downloaded successfully!");
+
+      let fileName = "System_Audit_Logs";
+      if (startDate && endDate) {
+        fileName += `_${startDate}_to_${endDate}`;
+      } else if (startDate) {
+        fileName += `_from_${startDate}`;
+      } else if (endDate) {
+        fileName += `_until_${endDate}`;
+      } else {
+        fileName += `_${new Date().toISOString().slice(0, 10)}`;
+      }
+      fileName += ".xlsx";
+
+      XLSX.writeFile(workbook, fileName);
+      toast.success(`Exported ${data.length} audit logs to Excel successfully!`);
     } catch {
       toast.error("Failed to export Excel logs");
     } finally {
@@ -291,44 +362,60 @@ export function LogsTab() {
           <p className="font-semibold text-violet-950">Email Notifications & Automation System Logs</p>
           <p className="text-violet-800 text-xs mt-0.5">
             Transparently track when notification emails are dispatched, recipient delivery statuses, and background automation execution results.
-            Inspect detailed diagnostic errors or export logs in Excel or CSV formats for offline review.
+            Inspect detailed diagnostic errors or filter by date range to export logs in Excel format for offline review.
           </p>
         </div>
       </div>
 
       <div className="bg-card rounded-[4px] border border-border overflow-hidden shadow-sm">
-        {/* Filter and Download Header */}
-        <div className="p-4 border-b border-border bg-muted/20 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-3 flex-1">
-            {/* Search */}
-            <div className="relative flex-1 min-w-[200px] max-w-sm">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+        {/* Filter and Download Header - Single Horizontal Line */}
+        <div className="p-3 border-b border-border bg-muted/20 flex flex-nowrap items-center justify-between gap-2.5 overflow-x-auto">
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Search - Real-time live typing search with instant clear button */}
+            <div className="relative w-56 shrink-0">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
               <input
                 type="text"
-                placeholder="Search recipient, pipeline, action..."
+                placeholder="Search recipient, action..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && fetchLogs()}
-                className="pl-9 pr-4 py-1.5 w-full border border-border rounded-[4px] bg-input-background focus:outline-none focus:ring-1 focus:ring-primary text-xs"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    setPage(1);
+                    fetchLogs({ search: e.currentTarget.value, page: 1 });
+                  }
+                }}
+                className="pl-8 pr-7 py-1.5 w-full border border-border rounded-[4px] bg-input-background focus:outline-none focus:ring-1 focus:ring-primary text-xs"
               />
+              {search && (
+                <button
+                  type="button"
+                  onClick={handleClearSearch}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer p-0.5"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             {/* Category Filter */}
             <select
               value={categoryFilter}
-              onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
-              className="h-8 px-2.5 rounded-[4px] border border-border bg-card text-foreground text-xs focus:outline-none font-medium"
+              onChange={(e) => handleCategoryChange(e.target.value)}
+              className="h-8 px-2 rounded-[4px] border border-border bg-card text-foreground text-xs focus:outline-none font-medium shrink-0"
             >
               <option value="ALL">All Categories</option>
-              <option value="EMAIL">Email Notifications</option>
-              <option value="AUTOMATION">Automation Pipelines</option>
+              <option value="EMAIL">Email</option>
+              <option value="AUTOMATION">Automation</option>
             </select>
 
             {/* Status Filter */}
             <select
               value={statusFilter}
-              onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-              className="h-8 px-2.5 rounded-[4px] border border-border bg-card text-foreground text-xs focus:outline-none font-medium"
+              onChange={(e) => handleStatusChange(e.target.value)}
+              className="h-8 px-2 rounded-[4px] border border-border bg-card text-foreground text-xs focus:outline-none font-medium shrink-0"
             >
               <option value="ALL">All Statuses</option>
               <option value="SUCCESS">Success Only</option>
@@ -336,14 +423,71 @@ export function LogsTab() {
               <option value="RUNNING">Running</option>
             </select>
 
+            {/* Date Range Picker - Shows 'From' and 'To' labels with instant calendar dropdown */}
+            <div className="flex items-center gap-1 bg-card border border-border rounded-[4px] px-2.5 h-8 shrink-0 select-none">
+              <Calendar className="w-3.5 h-3.5 text-muted-foreground shrink-0 mr-0.5" />
 
+              {/* From Date Box */}
+              <div className="relative cursor-pointer flex items-center px-2 py-0.5 rounded hover:bg-muted/70 transition-colors">
+                <span className={`text-xs font-normal ${startDate ? "text-foreground" : "text-muted-foreground"}`}>
+                  {startDate ? formatDisplayDate(startDate) : "From"}
+                </span>
+                <input
+                  ref={startInputRef}
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => handleStartDateChange(e.target.value)}
+                  onClick={(e) => {
+                    try {
+                      (e.target as any).showPicker?.();
+                    } catch {}
+                  }}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                  title="Select From Date"
+                />
+              </div>
+
+              <span className="text-muted-foreground/40 text-xs font-normal px-0.5">–</span>
+
+              {/* To Date Box */}
+              <div className="relative cursor-pointer flex items-center px-2 py-0.5 rounded hover:bg-muted/70 transition-colors">
+                <span className={`text-xs font-normal ${endDate ? "text-foreground" : "text-muted-foreground"}`}>
+                  {endDate ? formatDisplayDate(endDate) : "To"}
+                </span>
+                <input
+                  ref={endInputRef}
+                  type="date"
+                  value={endDate}
+                  min={startDate || undefined}
+                  onChange={(e) => handleEndDateChange(e.target.value)}
+                  onClick={(e) => {
+                    try {
+                      (e.target as any).showPicker?.();
+                    } catch {}
+                  }}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                  title="Select To Date"
+                />
+              </div>
+
+              {(startDate || endDate) && (
+                <button
+                  type="button"
+                  onClick={handleClearDates}
+                  title="Clear date filter"
+                  className="p-0.5 text-muted-foreground hover:text-foreground rounded transition-colors cursor-pointer ml-1"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={fetchLogs}
+              onClick={() => fetchLogs()}
               disabled={isLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-border bg-card hover:bg-muted text-foreground text-xs font-semibold rounded-[4px] transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-border bg-card hover:bg-muted text-foreground text-xs font-semibold rounded-[4px] transition-colors cursor-pointer shrink-0"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
               Refresh
@@ -351,18 +495,10 @@ export function LogsTab() {
             <button
               onClick={handleDownloadExcel}
               disabled={isDownloading}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-[4px] transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-[4px] transition-colors shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
             >
               {isDownloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5" />}
               Export Excel
-            </button>
-            <button
-              onClick={handleDownloadCsv}
-              disabled={isDownloading}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-[4px] transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-            >
-              {isDownloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-              Export CSV
             </button>
           </div>
         </div>
@@ -439,7 +575,12 @@ export function LogsTab() {
               <span>Per page:</span>
               <select
                 value={limit}
-                onChange={(e) => { setLimit(Number(e.target.value)); setPage(1); }}
+                onChange={(e) => {
+                  const newLimit = Number(e.target.value);
+                  setLimit(newLimit);
+                  setPage(1);
+                  fetchLogs({ page: 1, limit: newLimit });
+                }}
                 className="h-7 px-2 rounded border border-border bg-card text-foreground text-xs focus:outline-none"
               >
                 <option value={20}>20</option>
@@ -450,7 +591,7 @@ export function LogsTab() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              onClick={() => handlePageChange(Math.max(1, page - 1))}
               disabled={page <= 1}
               className="p-1 rounded border border-border hover:bg-muted disabled:opacity-40 cursor-pointer"
             >
@@ -458,7 +599,7 @@ export function LogsTab() {
             </button>
             <span className="font-semibold px-2">Page {page}</span>
             <button
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => handlePageChange(page + 1)}
               disabled={logs.length < limit}
               className="p-1 rounded border border-border hover:bg-muted disabled:opacity-40 cursor-pointer"
             >

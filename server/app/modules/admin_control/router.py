@@ -1,10 +1,9 @@
 """Admin control API routes for configurations, scheduler, manual sync, and audit logs."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt_bearer import get_current_user
@@ -469,8 +468,10 @@ async def list_audit_logs(
     category: Optional[str] = Query(None, description="Filter: 'ALL', 'EMAIL', 'AUTOMATION'"),
     status_filter: Optional[str] = Query(None, alias="status", description="Filter: 'SUCCESS', 'FAILED', 'WARNING'"),
     search: Optional[str] = Query(None, description="Search keyword in logs"),
+    start_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
     page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=10000),
     db: AsyncSession = Depends(get_db)
 ):
     """Query centralized execution and delivery logs."""
@@ -479,6 +480,8 @@ async def list_audit_logs(
             category,
             status_filter,
             search,
+            start_date,
+            end_date,
             page,
             limit,
             db
@@ -491,10 +494,16 @@ async def list_audit_logs(
 
 
 @router.get("/logs/download")
-async def download_logs(category: Optional[str] = Query(None), status_filter: Optional[str] = Query(None, alias="status"), db: AsyncSession = Depends(get_db)):
+async def download_logs(
+    category: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
     """Download system logs as a CSV file."""
     try:
-        return await AdminControlService.export_audit_logs_csv(category, status_filter, db)
+        return await AdminControlService.export_audit_logs_csv(category, status_filter, start_date, end_date, db)
     except HTTPException:
         raise
     except Exception as e:

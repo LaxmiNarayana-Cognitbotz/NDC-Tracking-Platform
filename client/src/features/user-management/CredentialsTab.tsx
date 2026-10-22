@@ -115,7 +115,7 @@ export function CredentialsTab() {
                     Automation Service Account
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Corporate Microsoft credentials for Oracle Fusion & DMS access
+                    Corporate Microsoft credentials
                   </p>
                 </div>
               </div>

@@ -15,6 +15,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "../../components/ui/tooltip";
 
 interface SpFolder {
   id: string;
@@ -119,7 +124,24 @@ export function SharePointDocsTab() {
       <div className="p-4 rounded-[4px] border border-sky-200 bg-sky-50/70 text-sky-900 flex items-start gap-3">
         <Folder className="w-5 h-5 text-sky-700 shrink-0 mt-0.5" />
         <div className="text-sm">
-          <p className="font-semibold text-sky-950">SharePoint F&F Document Management</p>
+          <div className="flex items-center gap-1.5">
+            <p className="font-semibold text-sky-950">SharePoint F&F Document Management</p>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  tabIndex={0}
+                  className="inline-flex items-center justify-center text-sky-700 hover:text-sky-950 cursor-pointer transition-colors p-0.5 rounded-full hover:bg-sky-200/50"
+                  title="Expiry: 7/29/2027"
+                  aria-label="Expiry: 7/29/2027"
+                >
+                  <Info className="w-3.5 h-3.5" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="text-xs font-medium">
+                Expiry: 7/29/2027
+              </TooltipContent>
+            </Tooltip>
+          </div>
           <p className="text-sky-800 text-xs mt-0.5">
             Identify employee F&F documents stored in SharePoint. For employees whose separation and settlement are fully closed,
             delete unnecessary files to free up storage space. If required in the future, click <strong>Re-Sync from DMS</strong> to restore them on demand.

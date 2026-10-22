@@ -63,11 +63,10 @@ export function DataModal({ isOpen, onClose, title, data, onSendReminder }: Data
             {title} ({data.length})
           </h2>
           <div className="flex items-center gap-2">
-            {/* Manual email send commented out for Pending NDC with GCC */}
-            {onSendReminder && !title.toLowerCase().includes("gcc") && (
+            {onSendReminder && (
               <button
                 disabled={data.length === 0}
-                onClick={() => onSendReminder("ndc_delayed")}
+                onClick={() => onSendReminder(title.toLowerCase().includes("gcc") ? "gcc_pending" : "ndc_delayed")}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground text-xs rounded-[4px] hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed font-medium shadow-sm"
               >
                 <Mail className="w-3.5 h-3.5" />

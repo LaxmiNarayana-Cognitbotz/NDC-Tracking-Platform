@@ -110,15 +110,15 @@ export function Sidebar() {
           <div className="px-3 py-2">
             <Link
               to="/ndc-reporting/user-management"
-              className={`flex items-center gap-3 px-4 py-2 rounded-lg transition-all duration-200 ${
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
                 isActive("/ndc-reporting/user-management")
-                  ? "bg-gradient-to-r from-[#003b70] to-[#1e5a8e] text-white shadow-md shadow-[#003b70]/10"
+                  ? "bg-gradient-to-r from-[#003b70] to-[#1e5a8e] text-white shadow-md shadow-[#003b70]/10 font-bold"
                   : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               } ${isCollapsed ? "justify-center" : ""}`}
               title={isCollapsed ? "Admin Management" : ""}
             >
-              <Settings className="w-4 h-4 flex-shrink-0" />
-              {!isCollapsed && <span className="font-medium text-xs whitespace-nowrap">Admin Management</span>}
+              <Settings className="w-5 h-5 flex-shrink-0" />
+              {!isCollapsed && <span className="font-semibold text-sm whitespace-nowrap">Admin Management</span>}
             </Link>
           </div>
         </div>

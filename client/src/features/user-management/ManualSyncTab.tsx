@@ -123,7 +123,7 @@ export function ManualSyncTab() {
         <div className="text-sm">
           <p className="font-semibold text-emerald-950">On-Demand Manual Data Synchronization</p>
           <p className="text-emerald-800 text-xs mt-0.5">
-            Trigger an immediate manual synchronization at any time to pull fresh separation records from Oracle Fusion,
+            Trigger an immediate manual synchronization at any time to pull fresh separation records from Data Fusion,
             sync separation exit sheets, or perform a full system update across the platform.
           </p>
         </div>
@@ -139,13 +139,13 @@ export function ManualSyncTab() {
                 <Database className="w-5 h-5" />
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-blue-100 text-blue-800">
-                Oracle Fusion
+                Data Fusion
               </span>
             </div>
             <div>
               <h3 className="font-bold text-base text-foreground">NDC Data Sync</h3>
               <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                Connects to Oracle Fusion, downloads the latest NDC Process Request Status Report, and refreshes all employee separation statuses.
+                Connects to Data Fusion, downloads the latest NDC Process Request Status Report, and refreshes all employee separation statuses.
               </p>
             </div>
           </div>

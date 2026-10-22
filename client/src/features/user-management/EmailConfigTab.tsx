@@ -1433,7 +1433,7 @@ export function EmailConfigTab() {
                   <div className="flex items-center gap-1.5">
                     <span>Scheduled Timing</span>
                     <span className="text-[10px] font-medium normal-case px-1.5 py-0.5 rounded bg-background text-muted-foreground border border-border">
-                      {timingMode === "app_wide" ? "Common" : "Dept-wise"}
+                      {timingMode === "app_wide" ? "" : "Dept-wise"}
                     </span>
                   </div>
                 </th>
@@ -1494,7 +1494,7 @@ export function EmailConfigTab() {
                                 ))}
                                 {isCommon && (
                                   <span className="text-[10px] text-muted-foreground font-normal shrink-0" title="Inherited from Common Schedule configured above">
-                                    (Common)
+                                    
                                   </span>
                                 )}
                               </div>
@@ -1522,7 +1522,7 @@ export function EmailConfigTab() {
                               </span>
                               {isCommon && (
                                 <span className="text-[10px] text-muted-foreground font-normal shrink-0" title="Inherited from Common Schedule configured above">
-                                  (Common)
+                                  
                                 </span>
                               )}
                             </div>

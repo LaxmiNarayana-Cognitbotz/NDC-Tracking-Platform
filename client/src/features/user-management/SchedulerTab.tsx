@@ -3,7 +3,7 @@ import axios from "../../lib/axios";
 import {
   Clock, Play, Loader2, CheckCircle2,
   FileText, Users, Database, Layers, FolderSync, Plus, X,
-  Save, Power
+  Save, Power, AlertCircle
 } from "lucide-react";
 import { toast } from "sonner";
 import { Switch } from "../../components/ui/switch";
@@ -114,6 +114,28 @@ export function SchedulerTab() {
   // Employee ID modal
   const [isFnfModalOpen, setIsFnfModalOpen] = useState(false);
   const [employeeInput, setEmployeeInput] = useState("");
+
+  // Manual Sync Confirmation Modal
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    type: "ndc" | "fnf" | "all" | null;
+    title: string;
+    description: string;
+    details: string[];
+  }>({
+    isOpen: false,
+    type: null,
+    title: "",
+    description: "",
+    details: [],
+  });
+
+  // Periodically refresh to keep schedule conflict checks up-to-date
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   const fetchSchedules = async () => {
     try {
@@ -358,6 +380,97 @@ export function SchedulerTab() {
     }
   };
 
+  // Schedule Conflict Check: within 15 minutes of saved automation times
+  const getScheduleConflict = (actionType: "ndc" | "fnf" | "all"): { hasConflict: boolean; conflictingTime?: string } => {
+    if (!schedulerEnabled) return { hasConflict: false };
+
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const timesToCheck: string[] = [];
+    if ((actionType === "ndc" || actionType === "all") && ndcEnabled) {
+      timesToCheck.push(...ndcTimesList);
+    }
+    if ((actionType === "fnf" || actionType === "all") && fnfEnabled) {
+      timesToCheck.push(...fnfTimesList);
+    }
+
+    const BUFFER_MINUTES = 15;
+
+    for (const timeStr of timesToCheck) {
+      const schedMinutes = time12ToMinutes(timeStr);
+      const diff = Math.abs(currentMinutes - schedMinutes);
+      const circularDiff = Math.min(diff, 1440 - diff);
+      if (circularDiff <= BUFFER_MINUTES) {
+        return {
+          hasConflict: true,
+          conflictingTime: timeStr,
+        };
+      }
+    }
+
+    return { hasConflict: false };
+  };
+
+  const requestSync = (actionType: "ndc" | "fnf" | "all") => {
+    if (!schedulerEnabled) {
+      toast.error("Manual sync is disabled while Master Automation Service is turned off.");
+      return;
+    }
+
+    const conflict = getScheduleConflict(actionType);
+    if (conflict.hasConflict) {
+      toast.error(`Cannot trigger manual sync within 15 minutes of scheduled automation run (${conflict.conflictingTime}).`);
+      return;
+    }
+
+    if (actionType === "ndc") {
+      setConfirmDialog({
+        isOpen: true,
+        type: "ndc",
+        title: "Confirm NDC Report Sync",
+        description: "Are you sure you want to trigger manual NDC Report Sync?",
+        details: [
+          "Connects to Data Fusion and downloads latest NDC clearance status report.",
+          "Updates employee separation records and clearance statuses in the platform database.",
+          "Executes as a background job with live status feedback."
+        ],
+      });
+    } else if (actionType === "fnf") {
+      setConfirmDialog({
+        isOpen: true,
+        type: "fnf",
+        title: "Confirm F&F Documents Sync",
+        description: "Are you sure you want to trigger manual F&F Documents Sync?",
+        details: [
+          "Scans active separation records and retrieves exit sheets directly from OpenText DMS.",
+          "Synchronizes retrieved documents into the designated SharePoint repository.",
+          "Refreshes F&F document availability and audit logs."
+        ],
+      });
+    } else if (actionType === "all") {
+      setConfirmDialog({
+        isOpen: true,
+        type: "all",
+        title: "Confirm Full System Synchronization",
+        description: "Are you sure you want to trigger complete Full System Sync?",
+        details: [
+          "End-to-end sync across Data Fusion, OpenText DMS, and SharePoint directories.",
+          "Runs NDC report download, F&F document retrieval, and directory synchronization in sequence.",
+          "This is an intensive pipeline and may take several minutes to finish."
+        ],
+      });
+    }
+  };
+
+  const handleConfirmSync = () => {
+    const type = confirmDialog.type;
+    setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+    if (type === "ndc") handleSyncNdc();
+    else if (type === "fnf") handleSyncFnf();
+    else if (type === "all") handleSyncAll();
+  };
+
   if (isLoading) {
     return (
       <div className="py-20 flex flex-col items-center justify-center gap-3 text-muted-foreground">
@@ -369,197 +482,28 @@ export function SchedulerTab() {
 
   return (
     <div className="space-y-6">
-      {/* 1. On-Demand Execution & Manual Sync Cards */}
-      <div className="space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Card 1: NDC Report & Clearance Sync */}
-          <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="p-2 rounded-md bg-primary/10 text-primary">
-                  <Database className="w-4 h-4" />
-                </div>
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
-                  Oracle Fusion
-                </span>
-              </div>
-              <div>
-                <h3 className="font-semibold text-sm text-foreground">NDC Report Sync</h3>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Downloads latest clearance status report from Oracle Fusion and updates platform database.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-border">
-              {lastResults.ndc && (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
-                  <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
-                  <span className="truncate">{lastResults.ndc}</span>
-                </div>
-              )}
-              <button
-                onClick={handleSyncNdc}
-                disabled={activeSyncAction !== null}
-                className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shadow-xs"
-              >
-                {activeSyncAction === "ndc" ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Syncing NDC...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5" />
-                    <span>Run NDC Sync Now</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Card 2: F&F Exit Documents Sync */}
-          <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="p-2 rounded-md bg-primary/10 text-primary">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
-                  OpenText DMS
-                </span>
-              </div>
-              <div>
-                <h3 className="font-semibold text-sm text-foreground">F&F Documents Sync</h3>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Scans active F&F separation records and downloads exit sheets directly from OpenText DMS.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-border">
-              {lastResults.fnf && (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
-                  <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
-                  <span className="truncate">{lastResults.fnf}</span>
-                </div>
-              )}
-              <button
-                onClick={handleSyncFnf}
-                disabled={activeSyncAction !== null}
-                className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shadow-xs"
-              >
-                {activeSyncAction === "fnf" ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Syncing F&F...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5" />
-                    <span>Run F&F Sync Now</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Card 3: Specific Employees F&F Download */}
-          <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="p-2 rounded-md bg-primary/10 text-primary">
-                  <Users className="w-4 h-4" />
-                </div>
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
-                  On-Demand
-                </span>
-              </div>
-              <div>
-                <h3 className="font-semibold text-sm text-foreground">Download by IDs</h3>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Enter specific employee person numbers to retrieve their exit documents on demand.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-border">
-              {lastResults.ids && (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
-                  <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
-                  <span className="truncate">{lastResults.ids}</span>
-                </div>
-              )}
-              <button
-                onClick={() => { setEmployeeInput(""); setIsFnfModalOpen(true); }}
-                disabled={activeSyncAction !== null}
-                className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shadow-xs"
-              >
-                <Users className="w-3.5 h-3.5" />
-                <span>Download by IDs</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Card 4: Full System Synchronization */}
-          <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="p-2 rounded-md bg-primary/10 text-primary">
-                  <Layers className="w-4 h-4" />
-                </div>
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
-                  Full Pipeline
-                </span>
-              </div>
-              <div>
-                <h3 className="font-semibold text-sm text-foreground">Full System Sync</h3>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  End-to-end sync across Oracle Fusion, OpenText DMS, and SharePoint directories.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-border">
-              {lastResults.all && (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
-                  <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
-                  <span className="truncate">{lastResults.all}</span>
-                </div>
-              )}
-              <button
-                onClick={handleSyncAll}
-                disabled={activeSyncAction !== null}
-                className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shadow-xs"
-              >
-                {activeSyncAction === "all" ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Syncing All...</span>
-                  </>
-                ) : (
-                  <>
-                    <FolderSync className="w-3.5 h-3.5" />
-                    <span>Full System Sync</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. Configurable Automation Schedule Timings */}
+      {/* 1. Master Automation Service & Configurable Execution Timings (NOW ON TOP) */}
       <form onSubmit={handleSaveSchedules} className="bg-card rounded-lg border border-border shadow-sm overflow-hidden">
         {/* Header with Master Automation Switch */}
         <div className="p-4 border-b border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10 text-primary">
+            <div className={`p-2 rounded-lg transition-colors ${
+              schedulerEnabled ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+            }`}>
               <Power className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-foreground">Master Automation Service</h2>
-              <p className="text-xs text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-foreground">Master Automation Service</h2>
+                {/* <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                  schedulerEnabled
+                    ? "bg-emerald-100 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800"
+                    : "bg-muted text-muted-foreground border border-border"
+                }`}>
+                  {schedulerEnabled ? "Active" : "Disabled"}
+                </span> */}
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
                 Automated background tasks run at scheduled times daily to fetch fresh reports
               </p>
             </div>
@@ -797,7 +741,7 @@ export function SchedulerTab() {
           </div>
         </div>
 
-        {/* Clean Save Button (Single button, no reset, no verbose message) */}
+        {/* Clean Save Button */}
         <div className="p-4 bg-muted/20 border-t border-border flex items-center justify-end">
           <button
             type="submit"
@@ -809,6 +753,321 @@ export function SchedulerTab() {
           </button>
         </div>
       </form>
+
+      {/* 2. On-Demand Execution & Manual Sync Cards (NOW BELOW MASTER AUTOMATION) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Card 1: NDC Report & Clearance Sync */}
+          {(() => {
+            const conflict = getScheduleConflict("ndc");
+            const isBlocked = !schedulerEnabled || conflict.hasConflict;
+            const isDisabled = isBlocked || activeSyncAction !== null;
+
+            return (
+              <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="p-2 rounded-md bg-primary/10 text-primary">
+                      <Database className="w-4 h-4" />
+                    </div>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
+                      Data Fusion
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm text-foreground">NDC Report Sync</h3>
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                      Downloads latest clearance status report from Data Fusion and updates platform database.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-border">
+                  {lastResults.ndc && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
+                      <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
+                      <span className="truncate">{lastResults.ndc}</span>
+                    </div>
+                  )}
+
+
+                  {schedulerEnabled && conflict.hasConflict && (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                      Restricted: Scheduled at {conflict.conflictingTime} (±15 min window)
+                    </p>
+                  )}
+
+                  <button
+                    onClick={() => requestSync("ndc")}
+                    disabled={isDisabled}
+                    title={
+                      !schedulerEnabled
+                        ? "Manual sync is disabled while Master Automation is turned off"
+                        : conflict.hasConflict
+                        ? `Restricted within 15 minutes of scheduled run (${conflict.conflictingTime})`
+                        : undefined
+                    }
+                    className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+                  >
+                    {activeSyncAction === "ndc" ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Syncing NDC...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5" />
+                        <span>Run NDC Sync Now</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Card 2: F&F Exit Documents Sync */}
+          {(() => {
+            const conflict = getScheduleConflict("fnf");
+            const isBlocked = !schedulerEnabled || conflict.hasConflict;
+            const isDisabled = isBlocked || activeSyncAction !== null;
+
+            return (
+              <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="p-2 rounded-md bg-primary/10 text-primary">
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
+                      OpenText DMS
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm text-foreground">F&F Documents Sync</h3>
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                      Scans active F&F separation records and downloads exit sheets directly from OpenText DMS.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-border">
+                  {lastResults.fnf && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
+                      <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
+                      <span className="truncate">{lastResults.fnf}</span>
+                    </div>
+                  )}
+
+
+                  {schedulerEnabled && conflict.hasConflict && (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                      Restricted: Scheduled at {conflict.conflictingTime} (±15 min window)
+                    </p>
+                  )}
+
+                  <button
+                    onClick={() => requestSync("fnf")}
+                    disabled={isDisabled}
+                    title={
+                      !schedulerEnabled
+                        ? "Manual sync is disabled while Master Automation is turned off"
+                        : conflict.hasConflict
+                        ? `Restricted within 15 minutes of scheduled run (${conflict.conflictingTime})`
+                        : undefined
+                    }
+                    className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+                  >
+                    {activeSyncAction === "fnf" ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Syncing F&F...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5" />
+                        <span>Run F&F Sync Now</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Card 3: Specific Employees F&F Download */}
+          <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="p-2 rounded-md bg-primary/10 text-primary">
+                  <Users className="w-4 h-4" />
+                </div>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
+                  On-Demand
+                </span>
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-foreground">Download by IDs</h3>
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                  Enter specific employee person numbers to retrieve their exit documents on demand.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-border">
+              {lastResults.ids && (
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
+                  <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
+                  <span className="truncate">{lastResults.ids}</span>
+                </div>
+              )}
+
+
+              <button
+                onClick={() => {
+                  if (!schedulerEnabled) {
+                    toast.error("Manual sync is disabled while Master Automation Service is turned off.");
+                    return;
+                  }
+                  setEmployeeInput("");
+                  setIsFnfModalOpen(true);
+                }}
+                disabled={!schedulerEnabled || activeSyncAction !== null}
+                title={!schedulerEnabled ? "Manual sync is disabled while Master Automation is turned off" : undefined}
+                className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Download by IDs</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Card 4: Full System Synchronization */}
+          {(() => {
+            const conflict = getScheduleConflict("all");
+            const isBlocked = !schedulerEnabled || conflict.hasConflict;
+            const isDisabled = isBlocked || activeSyncAction !== null;
+
+            return (
+              <div className="bg-card rounded-lg border border-border p-5 flex flex-col justify-between space-y-4 hover:border-primary/40 transition-colors shadow-sm">
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="p-2 rounded-md bg-primary/10 text-primary">
+                      <Layers className="w-4 h-4" />
+                    </div>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">
+                      Full Pipeline
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm text-foreground">Full System Sync</h3>
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                      End-to-end sync across Data Fusion, OpenText DMS, and SharePoint directories.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-border">
+                  {lastResults.all && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium">
+                      <CheckCircle2 className="w-3 h-3 text-primary shrink-0" />
+                      <span className="truncate">{lastResults.all}</span>
+                    </div>
+                  )}
+
+
+                  {schedulerEnabled && conflict.hasConflict && (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                      Restricted: Scheduled run at {conflict.conflictingTime} (±15 min buffer)
+                    </p>
+                  )}
+
+                  <button
+                    onClick={() => requestSync("all")}
+                    disabled={isDisabled}
+                    title={
+                      !schedulerEnabled
+                        ? "Manual sync is disabled while Master Automation is turned off"
+                        : conflict.hasConflict
+                        ? `Restricted within 15 minutes of scheduled run (${conflict.conflictingTime})`
+                        : undefined
+                    }
+                    className="w-full py-2 px-3 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+                  >
+                    {activeSyncAction === "all" ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Syncing All...</span>
+                      </>
+                    ) : (
+                      <>
+                        <FolderSync className="w-3.5 h-3.5" />
+                        <span>Full System Sync</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+
+      {/* Manual Sync Confirmation Modal */}
+      <Dialog open={confirmDialog.isOpen} onOpenChange={(open) => setConfirmDialog((prev) => ({ ...prev, isOpen: open }))}>
+        <DialogContent className="max-w-md p-6">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-semibold">
+              <AlertCircle className="w-5 h-5 text-primary" />
+              {confirmDialog.title}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-2">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {confirmDialog.description}
+            </p>
+
+            {confirmDialog.details.length > 0 && (
+              <div className="p-3 rounded-lg bg-muted/40 border border-border space-y-1.5 text-xs text-foreground">
+                <span className="font-semibold text-[11px] uppercase tracking-wider text-muted-foreground block mb-1">
+                  Operation Pipeline:
+                </span>
+                <ul className="space-y-1.5 list-disc list-inside text-muted-foreground">
+                  {confirmDialog.details.map((detail, idx) => (
+                    <li key={idx} className="leading-snug">
+                      <span className="text-foreground">{detail}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* <div className="p-2.5 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-[11px] text-amber-800 dark:text-amber-300 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                This operation will execute in the background. Progress and results will be tracked live on this page.
+              </span>
+            </div> */}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 border border-border rounded-md text-xs font-medium text-foreground hover:bg-muted transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSync}
+                className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-md text-xs font-semibold hover:bg-primary/90 transition-colors shadow-xs cursor-pointer"
+              >
+                <Play className="w-3.5 h-3.5" />
+                <span>Confirm & Run Sync</span>
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* F&F Download Modal */}
       <Dialog open={isFnfModalOpen} onOpenChange={setIsFnfModalOpen}>

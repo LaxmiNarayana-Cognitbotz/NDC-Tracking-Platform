@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router";
 import { useAuth } from "../../context/AuthContext";
 import {
   Users, Key, Clock, Mail, Folder, FileText,
-  Shield, Sliders
+  Shield, 
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 
@@ -81,14 +81,14 @@ export function UserManagement() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="p-8 space-y-6">
       {/* Page Header */}
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-lg bg-primary/10 text-primary">
+            {/* <div className="p-2 rounded-lg bg-primary/10 text-primary">
               <Sliders className="w-6 h-6" />
-            </div>
+            </div> */}
             <div>
               <h1 className="text-2xl font-bold text-foreground tracking-tight">Admin & System Control Center</h1>
               <p className="text-muted-foreground text-xs mt-0.5">

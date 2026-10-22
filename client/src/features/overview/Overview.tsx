@@ -969,13 +969,11 @@ export function Overview() {
         <FullScreenTable
           data={mockNDCData.filter((r) => r.ndcStage === "GCC Pending")}
           title="Pending NDC with GCC"
-          /* Manual email send commented out for Pending NDC with GCC
           onSendReminder={() => {
             setReminderMailEmailTo("");
             setReminderMailType("gcc_pending");
             setReminderMailDialogOpen(true);
           }}
-          */
         />
       </FullScreenModal>
 
